@@ -1,0 +1,14 @@
+{
+  "name": "jit-memory",
+  "version": "1.0.0",
+  "description": "Just-in-time operational knowledge base for GitHub Copilot CLI",
+  "type": "module",
+  "private": true,
+  "main": "extension.mjs",
+  "scripts": {
+    "audit": "node audit.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

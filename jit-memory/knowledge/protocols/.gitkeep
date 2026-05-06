@@ -1,0 +1,4 @@
+# Multi-step behavioral protocols.
+# Files here use frontmatter `kind: "protocol"`. The router treats them
+# identically to regular domains; the kind field is for the curator's signal
+# routing and human inspection.

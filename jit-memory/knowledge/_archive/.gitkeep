@@ -1,0 +1,3 @@
+# Retired domain files land here.
+# When an entry's frontmatter `deprecated:` date is >30 days old, the
+# scheduled `node audit.mjs` run moves it from knowledge/ into here.
