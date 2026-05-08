@@ -38,6 +38,7 @@ jitmemdist/
 ├── README.md                          (this file — design rationale)
 ├── INSTALL.md                         step-by-step install
 ├── copilot-instructions.snippet.md    paste-into-instructions block (~15 lines)
+├── retrofit-existing-instructions.md   one-time prompt for migrating old notes
 └── jit-memory/                        ← copy this whole tree to ~/.copilot/extensions/jit-memory/
     ├── package.json
     ├── extension.mjs                  hooks + tools registration
@@ -122,8 +123,16 @@ user if no clear demotion target exists.
   Run `copilot --version` to check.
 - **Node.js ≥18.** Required for native `fs.promises`, `node:test`, and ESM
   module syntax.
-- **No `--experimental` flag required.** Extensions are a stable feature in
-  v1.0.36.
+- **Experimental features enabled.** As of the current Copilot CLI version,
+  extensions are available only when experimental features are turned on.
+  Check status, enabled features, and available features from inside Copilot CLI
+  with `/experimental`. Turn experimental mode on either by launching once with
+  `copilot --experimental` or by running `/experimental` and enabling it there.
+  The setting is persisted after it is enabled.
+
+  Experimental features are still in development and may change, break, or be
+  removed without the same compatibility guarantees as stable features. Use them
+  with that risk in mind, and expect to revisit setup after CLI updates.
 
 That's it. **Zero npm dependencies.** The extension imports only Node built-ins
 (`node:fs`, `node:path`, `node:crypto`, `node:os`, `node:url`) and the

@@ -10,7 +10,21 @@ If you just want it working:
    ```
    You should see `1.0.36` or higher. If not, run `copilot update`.
 
-2. **Copy the extension folder.** Find the `jit-memory` folder inside this
+2. **Enable experimental features.** As of the current Copilot CLI version,
+   extensions are available only when experimental features are turned on.
+   Start Copilot CLI and run `/experimental` to check whether experimental mode
+   is enabled and to see which experimental features are enabled or available.
+   If it is not enabled, either run `/experimental` and enable it there, or
+   launch once with:
+   ```
+   copilot --experimental
+   ```
+
+   The setting is persisted after it is enabled. Experimental features are still
+   in development and may change, break, or be removed without the same
+   compatibility guarantees as stable features.
+
+3. **Copy the extension folder.** Find the `jit-memory` folder inside this
    download package. Copy it (the whole folder) into:
    - **Windows:** `C:\Users\<your-username>\.copilot\extensions\`
    - **Mac/Linux:** `~/.copilot/extensions/`
@@ -19,15 +33,21 @@ If you just want it working:
    done, this file should exist:
    `~/.copilot/extensions/jit-memory/extension.mjs`
 
-3. **Add the snippet to your instructions file.** Open
+4. **Add the snippet to your instructions file.** Open
    `~/.copilot/copilot-instructions.md` in any text editor (create it if it
    doesn't exist). Open `copilot-instructions.snippet.md` from this package,
    copy everything in it, and paste it at the bottom of your instructions
    file. Save.
 
-4. **Restart Copilot CLI.** Close it completely and start it again. Look at
+5. **Restart Copilot CLI.** Close it completely and start it again. Look at
    the startup banner — it should say something like
-   `Environment loaded: ... 1 extension ...`. That's it.
+   `Environment loaded: ... 1 extension ...`.
+
+6. **Optional: retrofit existing notes.** If your instructions file already
+   contains durable knowledge you want `jit-memory` to route and recall, use
+   `retrofit-existing-instructions.md` as a one-time prompt after restarting.
+   It creates a backup, captures migrated items through `jit_memory_capture`,
+   and reports what moved. That's it.
 
 You're done. No `npm install`, no admin privileges, no extra software. The
 detailed install instructions below cover edge cases, scheduling the audit
@@ -45,7 +65,11 @@ That's the entire install.
   versions may work but are not tested.
 - **Node.js ≥18.** The CLI bundles its own Node, so you usually do not need a
   separate Node install.
-- **No `--experimental` flag required.** Extensions are a stable feature.
+- **Experimental features enabled.** Extensions currently require experimental
+  mode. Run `/experimental` inside Copilot CLI to check status, see enabled or
+  available experimental features, and enable or disable experimental mode. You
+  can also turn it on by launching once with `copilot --experimental`; the
+  setting is persisted afterward.
 - **Zero npm packages.** The extension imports only Node built-ins (`node:fs`,
   `node:path`, `node:crypto`, `node:os`, `node:url`) and
   `@github/copilot-sdk/extension`, which is provided by the CLI. There is no
@@ -58,8 +82,9 @@ is identical: the `jit-memory/` directory from this package ends up at
 `~/.copilot/extensions/jit-memory/` (so that
 `~/.copilot/extensions/jit-memory/extension.mjs` exists).
 
-The CLI auto-discovers extensions in `~/.copilot/extensions/<name>/` on next
-startup — there is **no** registration command to run.
+When experimental features are enabled, the CLI auto-discovers extensions in
+`~/.copilot/extensions/<name>/` on next startup — there is **no** registration
+command to run.
 
 ### Option A — manual copy (any OS)
 
@@ -137,6 +162,9 @@ discovered. Look at the startup banner — it should show
 `Environment loaded: ... 1 extension ...` (the count includes any other
 extensions you have).
 
+If the extension count is 0, run `/experimental` inside Copilot CLI and confirm
+experimental mode is enabled, then restart again.
+
 Try a prompt that has no associated knowledge yet (e.g., "what's 2+2?"):
 - Behind the scenes the extension's `onUserPromptSubmitted` hook fires,
   routes against the empty knowledge base, and returns no additional context.
@@ -182,9 +210,11 @@ not a failure — monitor that file's mtime/content if you want notifications.
 ## 5. Troubleshooting
 
 **The extension didn't load.**
-Check the startup banner for an error or a 0-extension count. Restart the CLI
-to see initial-load errors (the `safeHook`/`safeTool` wrappers throttle warnings
-during normal operation, so the cleanest diagnostic is a fresh launch).
+Check the startup banner for an error or a 0-extension count. Run
+`/experimental` to confirm experimental mode is enabled and to see which
+experimental features are enabled or available. Restart the CLI to see
+initial-load errors (the `safeHook`/`safeTool` wrappers throttle warnings during
+normal operation, so the cleanest diagnostic is a fresh launch).
 
 **`onUserPromptSubmitted` is slow.**
 The router has a hard 500 ms timeout. Slow networked home directories or

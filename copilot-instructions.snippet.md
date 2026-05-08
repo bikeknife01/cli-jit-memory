@@ -7,7 +7,7 @@
 
 ## Operational Knowledge Base (jit-memory)
 
-The `jit-memory` CLI extension auto-loads relevant lessons before each prompt and exposes capture tools. **Do not edit knowledge files by hand.**
+The `jit-memory` CLI extension auto-loads relevant lessons before each prompt and exposes capture tools. **Do not edit knowledge files by hand.** If the `jit-memory` CLI extension fails or is unavailable, notify the user and proceed without loading additional lessons or capturing new ones until the tools are available.
 
 ### Capture rules
 
@@ -35,9 +35,11 @@ immediate capture intent. Pick the right `kind` yourself using the
 Capture rules above, including creating a new domain (`kind: "domain_new"`)
 when no existing domain fits. Do not ask the user to specify tool names,
 kinds, domains, sections, tags, or schemas — translate their natural
-language into the correct `jit_memory_capture` call. Confirm only when
-the Capture rules above require it (Quick Rules at cap, contradiction
-without clear reconciliation, or domain naming is genuinely ambiguous).
+language into the correct `jit_memory_capture` call based on the Capture
+rules and current context. Confirm only when the Capture rules above
+require it (Quick Rules are at cap and demotion target is ambiguous,
+contradiction without clear reconciliation, or domain naming is genuinely
+ambiguous).
 
 ### Quick Rules — managed by jit_memory_capture
 
