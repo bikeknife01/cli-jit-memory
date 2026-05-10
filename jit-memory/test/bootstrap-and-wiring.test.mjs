@@ -70,10 +70,26 @@ test("ensureMarkers inserts only QR when only QR missing", async () => {
       assert.equal(r.qrInserted, true);
       assert.equal(r.kbInserted, false);
       const after = await readFile(INSTR, "utf8");
-      assert.match(after, /## Quick Rules/);
+      assert.match(after, /## Operational Knowledge Base \(jit-memory\)/);
+      assert.match(after, /### Quick Rules — managed by jit_memory_capture/);
       assert.match(after, /<!-- QR:BEGIN -->/);
       assert.match(after, /<!-- QR:END -->/);
       // KB block unchanged & not duplicated.
+      assert.equal((after.match(/<!-- KB:BEGIN -->/g) || []).length, 1);
+    }
+  );
+});
+
+test("ensureMarkers inserts only QR subsection when OKB heading already exists", async () => {
+  await withInstructions(
+    "# header\n\n## Operational Knowledge Base (jit-memory)\n\n### Domain Index\n\n<!-- KB:BEGIN -->\n<!-- KB:END -->\n",
+    async () => {
+      const r = await ensureMarkers();
+      assert.equal(r.qrInserted, true);
+      assert.equal(r.kbInserted, false);
+      const after = await readFile(INSTR, "utf8");
+      assert.equal((after.match(/## Operational Knowledge Base \(jit-memory\)/g) || []).length, 1);
+      assert.match(after, /### Quick Rules — managed by jit_memory_capture/);
       assert.equal((after.match(/<!-- KB:BEGIN -->/g) || []).length, 1);
     }
   );
@@ -89,9 +105,27 @@ test("ensureMarkers inserts only KB when only KB missing", async () => {
       assert.equal(r.qrInserted, false);
       assert.equal(r.kbInserted, true);
       const after = await readFile(INSTR, "utf8");
-      assert.match(after, /### Domain Tag Index/);
+      assert.match(after, /## Operational Knowledge Base \(jit-memory\)/);
+      assert.match(after, /### Domain Index/);
       assert.match(after, /<!-- KB:BEGIN -->/);
       assert.match(after, /<!-- KB:END -->/);
+      assert.match(after, /\| Domain \| File \|/);
+      assert.equal((after.match(/<!-- QR:BEGIN -->/g) || []).length, 1);
+    }
+  );
+});
+
+test("ensureMarkers inserts only KB subsection when OKB heading already exists", async () => {
+  await withInstructions(
+    "# header\n\n## Operational Knowledge Base (jit-memory)\n\n### Quick Rules — managed by jit_memory_capture\n\n<!-- QR:BEGIN -->\n<!-- QR:END -->\n",
+    async () => {
+      const r = await ensureMarkers();
+      assert.equal(r.qrInserted, false);
+      assert.equal(r.kbInserted, true);
+      const after = await readFile(INSTR, "utf8");
+      assert.equal((after.match(/## Operational Knowledge Base \(jit-memory\)/g) || []).length, 1);
+      assert.match(after, /### Domain Index/);
+      assert.match(after, /\| Domain \| File \|/);
       assert.equal((after.match(/<!-- QR:BEGIN -->/g) || []).length, 1);
     }
   );
@@ -107,6 +141,9 @@ test("ensureMarkers inserts both when both missing", async () => {
       assert.equal(r.qrInserted, true);
       assert.equal(r.kbInserted, true);
       const after = await readFile(INSTR, "utf8");
+      assert.equal((after.match(/## Operational Knowledge Base \(jit-memory\)/g) || []).length, 1);
+      assert.match(after, /### Quick Rules — managed by jit_memory_capture/);
+      assert.match(after, /### Domain Index/);
       assert.match(after, /<!-- QR:BEGIN -->/);
       assert.match(after, /<!-- QR:END -->/);
       assert.match(after, /<!-- KB:BEGIN -->/);
@@ -195,17 +232,40 @@ test("ensureMarkers refuses to write on reversed markers (END before BEGIN)", as
   });
 });
 
+test("ensureMarkers refuses to append when QR markers use whitespace variants", async () => {
+  const original =
+    "# header\n<!--QR:BEGIN-->\nexisting\n<!-- QR:END  -->\n" +
+    "<!-- KB:BEGIN -->\n<!-- KB:END -->\n";
+  await withInstructions(original, async () => {
+    const r = await ensureMarkers();
+    assert.equal(r.qrInserted, false);
+    assert.equal(r.kbInserted, false);
+    assert.equal(r.qrState, "malformed");
+    assert.match(r.error, /malformed.*QR/);
+    const after = await readFile(INSTR, "utf8");
+    assert.equal(after, original, "file unchanged when marker variants are present");
+  });
+});
+
 // ── extension.mjs source-shape: joinSession({hooks, tools}) is used ─────────
 
 test("extension.mjs registers hooks/tools via joinSession options", async () => {
   const src = await readFile(resolve("extension.mjs"), "utf8");
   // Must call joinSession with a config object containing hooks and tools.
   assert.match(src, /joinSession\(\s*\{\s*hooks\s*,\s*tools\s*\}\s*\)/);
+  assert.match(src, /import\s+\{\s*syncNow,\s*drainSync,\s*requestSync\s*\}\s+from\s+"\.\/lib\/sync\.mjs"/);
+  assert.match(src, /requestSync\(\{\s*debounceMs:\s*0\s*\}\)/);
+  assert.match(src, /function\s+noticeOnce\s*\(/);
+  assert.match(src, /drift-heal:notice/);
+  assert.match(src, /result\.routingWritten\s*\|\|\s*kbRefresh/);
   // Must NOT use the non-existent rpc.register* APIs (call sites, not comments).
   assert.doesNotMatch(src, /^[^\/\n]*\bsession\.rpc\.registerHooks\s*\(/m);
   assert.doesNotMatch(src, /^[^\/\n]*\bsession\.rpc\.registerTool\s*\(/m);
   // Bootstrap must be wired in.
   assert.match(src, /ensureMarkers\s*\(/);
+  // Session-end must drain pending sync work.
+  assert.match(src, /import\s+\{\s*syncNow,\s*drainSync,\s*requestSync\s*\}\s+from\s+"\.\/lib\/sync\.mjs"/);
+  assert.match(src, /onSessionEnd[\s\S]*?drainSync\s*\(/);
   // Bootstrap result is gated for marker-dependent tools (race fix from
   // rubber-duck review of fix #7).
   assert.match(src, /gateOnMarkers\s*\(/);

@@ -84,6 +84,16 @@ test("missing markers return status:missing without invoking callback", async ()
   assert.equal(called, false, "callback must not run when markers absent");
 });
 
+test("marker whitespace variants return malformed without invoking callback", async () => {
+  const path = join(tmp, "doc-marker-variants.md");
+  await writeFile(path, `before\n${BEGIN}\nbase\n<!-- TEST:END  -->\nafter\n`, "utf8");
+  let called = false;
+  const r = await casReplaceMarkers(path, BEGIN, END, () => { called = true; return "x"; });
+  assert.equal(r.ok, false);
+  assert.equal(r.status, "malformed");
+  assert.equal(called, false, "callback must not run when marker variants are present");
+});
+
 test("buildInner throwing surfaces as build_error (no write)", async () => {
   const path = join(tmp, "doc-throws.md");
   await writeFile(path, `${BEGIN}\nbase\n${END}\n`, "utf8");

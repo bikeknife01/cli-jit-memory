@@ -1,17 +1,19 @@
 // Deterministic audit: stale, cap, disputed, collisions, zero-hit, bloat,
 // deprecated archival, frontmatter errors, marker presence.
-// Read-only by default. archivalAllowed=true permits moving deprecated >30d to _archive/.
+// Writes the digest and may prune stale usage telemetry. archivalAllowed=true
+// additionally permits moving deprecated >30d to _archive/.
 
 import { promises as fs } from "node:fs";
 import { join, dirname } from "node:path";
 import {
-  KNOWLEDGE_ROOT, ARCHIVE_DIR, INSTRUCTIONS_MD, DIGEST_MD
+  KNOWLEDGE_ROOT, ARCHIVE_DIR, INSTRUCTIONS_MD, DIGEST_MD, ROUTING_JSON
 } from "./paths.mjs";
 import { atomicWrite, readWithStatOrNull } from "./atomic.mjs";
 import { parse, validateMeta } from "./frontmatter.mjs";
-import { loadUsage } from "./usage.mjs";
+import { loadUsage, pruneUsageDomains, usageDomainsForFile } from "./usage.mjs";
 import { QR_BEGIN, QR_END } from "./capture.mjs";
-import { KB_BEGIN, KB_END, syncNow } from "./sync.mjs";
+import { KB_BEGIN, KB_END, syncNow, renderKbBlock } from "./sync.mjs";
+import { truncateUtf8AtLineBoundary, utf8ByteLength } from "./utf8.mjs";
 
 const STALE_WARN_DAYS  = 30;
 const STALE_ACT_DAYS   = 90;
@@ -21,6 +23,10 @@ const BLOAT_H2_COUNT   = 40;
 const QR_CAP           = 10;
 const COLLISION_THRESHOLD = 3;
 const DIGEST_BUDGET    = 2048;
+// Soft scale guardrails. These are warnings, not hard caps.
+const DOMAIN_COUNT_WARN = 75;           // Flat domain sets above this get hard to curate.
+const KB_BLOCK_BYTES_WARN = 4 * 1024;   // Static KB index footprint in copilot-instructions.md.
+const ROUTING_JSON_BYTES_WARN = 128 * 1024; // Generated table load/scan overhead.
 
 const daysAgo = ms => (Date.now() - ms) / 86_400_000;
 
@@ -53,23 +59,30 @@ export async function audit({ archivalAllowed = false } = {}) {
     bloated: [],      // [{file, h2Count}]
     deprecated: [],   // [{file, daysSince}]
     frontmatterErrors: [],
-    markersMissing: { qr: false, kb: false }
+    markersMissing: { qr: false, kb: false },
+    scaleWarnings: [] // [{kind, value, threshold, summary}]
   };
   const archived = [];
+  const maintenance = {
+    usagePruned: { ok: true, prunedCount: 0, prunedDomains: [], written: false }
+  };
+  const usageActiveDomains = new Set();
 
   // 1. Frontmatter pass.
   const files = await listDomainFiles();
   const parsedFiles = []; // { file, meta, body, mtimeMs }
   for (const { full, rel } of files) {
+    for (const domain of usageDomainsForFile(rel)) usageActiveDomains.add(domain);
     let raw, st;
     try { raw = await fs.readFile(full, "utf8"); st = await fs.stat(full); }
     catch (e) { findings.frontmatterErrors.push({ file: rel, error: `read: ${e.message}` }); continue; }
     let meta, body;
     try { ({ meta, body } = parse(raw)); }
     catch (e) { findings.frontmatterErrors.push({ file: rel, error: `parse: ${e.message}` }); continue; }
+    for (const domain of usageDomainsForFile(rel, meta)) usageActiveDomains.add(domain);
     const v = validateMeta(meta);
     if (!v.ok) findings.frontmatterErrors.push({ file: rel, error: v.errors.join("; ") });
-    parsedFiles.push({ rel, full, meta, body, mtimeMs: st.mtimeMs });
+    parsedFiles.push({ rel, full, meta, body, mtimeMs: st.mtimeMs, valid: v.ok });
   }
 
   // 2. Stale.
@@ -98,6 +111,8 @@ export async function audit({ archivalAllowed = false } = {}) {
   }
   for (const [token, files] of tagMap)   if (files.size >= COLLISION_THRESHOLD) findings.collisions.push({ token, kind: "tag",   files: [...files] });
   for (const [token, files] of aliasMap) if (files.size >= COLLISION_THRESHOLD) findings.collisions.push({ token, kind: "alias", files: [...files] });
+
+  maintenance.usagePruned = await pruneUsageDomains(usageActiveDomains);
 
   // 5. Zero-hit / demotion candidates.
   const usage = await loadUsage();
@@ -142,7 +157,10 @@ export async function audit({ archivalAllowed = false } = {}) {
     }
   }
 
-  // 9. Archival (write side, scheduler only).
+  // 9. Scale guardrails.
+  await addScaleWarnings(findings, parsedFiles);
+
+  // 10. Archival (write side, scheduler only).
   if (archivalAllowed) {
     for (const dep of findings.deprecated) {
       if (!dep.eligible) continue;
@@ -157,7 +175,13 @@ export async function audit({ archivalAllowed = false } = {}) {
       }
     }
     if (archived.length > 0) {
-      await syncNow();
+      const syncResult = await syncNow();
+      maintenance.usagePruned = mergeUsagePruneResults(maintenance.usagePruned, {
+        ok: true,
+        prunedCount: syncResult.usagePrunedCount || 0,
+        prunedDomains: syncResult.usagePrunedDomains || [],
+        written: (syncResult.usagePrunedCount || 0) > 0
+      });
     }
   }
 
@@ -170,13 +194,66 @@ export async function audit({ archivalAllowed = false } = {}) {
     await atomicWrite(DIGEST_MD, digest);
   }
 
-  return { healthy, digest, findings, archived };
+  return { healthy, digest, findings, archived, maintenance };
+}
+
+function mergeUsagePruneResults(a, b) {
+  const domains = new Set([...(a.prunedDomains || []), ...(b.prunedDomains || [])]);
+  return {
+    ok: a.ok !== false && b.ok !== false,
+    prunedCount: domains.size,
+    prunedDomains: [...domains],
+    written: !!(a.written || b.written)
+  };
 }
 
 function push(map, key, val) {
   let s = map.get(key);
   if (!s) { s = new Set(); map.set(key, s); }
   s.add(val);
+}
+
+async function addScaleWarnings(findings, parsedFiles) {
+  if (parsedFiles.length > DOMAIN_COUNT_WARN) {
+    findings.scaleWarnings.push({
+      kind: "domain_count",
+      value: parsedFiles.length,
+      threshold: DOMAIN_COUNT_WARN,
+      summary: "consider archiving deprecated domains, resolving zero-hit candidates, or splitting only genuinely broad domains"
+    });
+  }
+
+  const validEntries = parsedFiles
+    .filter(f => f.valid)
+    .map(f => ({
+      domain: f.meta.domain,
+      file_rel: f.rel
+    }));
+  const kbBytes = utf8ByteLength(renderKbBlock(validEntries));
+  if (kbBytes > KB_BLOCK_BYTES_WARN) {
+    findings.scaleWarnings.push({
+      kind: "kb_block_bytes",
+      value: kbBytes,
+      threshold: KB_BLOCK_BYTES_WARN,
+      summary: "static KB index in copilot-instructions.md is large; archive low-value domains"
+    });
+  }
+
+  try {
+    const st = await fs.stat(ROUTING_JSON);
+    if (st.size > ROUTING_JSON_BYTES_WARN) {
+      findings.scaleWarnings.push({
+        kind: "routing_json_bytes",
+        value: st.size,
+        threshold: ROUTING_JSON_BYTES_WARN,
+        summary: "generated routing table is large; prune or archive domains that no longer route useful context"
+      });
+    }
+  } catch (e) {
+    if (e.code !== "ENOENT") {
+      findings.frontmatterErrors.push({ file: "_routing.json", error: `stat: ${e.message}` });
+    }
+  }
 }
 
 function renderDigest(f, archived) {
@@ -195,6 +272,7 @@ function renderDigest(f, archived) {
   if (f.zeroHit.length)         sections.push(["Demotion candidates (>60d unused)", f.zeroHit.map(x => `- ${x.file} (hits=${x.hits}, since=${x.daysSinceHit ?? "never"})`)]);
   if (f.collisions.length)      sections.push(["Token collisions (≥3 domains)", f.collisions.map(c => `- ${c.kind} "${c.token}" → ${c.files.join(", ")}`)]);
   if (f.deprecated.length)      sections.push(["Deprecated", f.deprecated.map(x => `- ${x.file} (${x.daysSince}d${x.eligible ? ", archive-eligible" : ""})`)]);
+  if (f.scaleWarnings.length)   sections.push(["Scale guardrails", f.scaleWarnings.map(x => `- ${x.kind}: ${x.value} > ${x.threshold}; ${x.summary}`)]);
   if (archived.length)          sections.push(["Archived this run",   archived.map(a => `- ${a.from} → ${a.to}`)]);
 
   if (sections.length === 0) return null;
@@ -207,12 +285,8 @@ function renderDigest(f, archived) {
     lines.push(`## ${title}`, "", ...body, "");
   }
   let out = lines.join("\n");
-  if (Buffer.byteLength(out, "utf8") > DIGEST_BUDGET) {
-    // Truncate at last full line under budget.
-    const buf = Buffer.from(out, "utf8");
-    const cut = buf.subarray(0, DIGEST_BUDGET).toString("utf8");
-    const lastNl = cut.lastIndexOf("\n");
-    out = (lastNl > 0 ? cut.slice(0, lastNl) : cut) + "\n\n_(truncated)_\n";
+  if (utf8ByteLength(out) > DIGEST_BUDGET) {
+    out = truncateUtf8AtLineBoundary(out, DIGEST_BUDGET);
   }
   return out;
 }

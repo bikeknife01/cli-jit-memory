@@ -4,6 +4,7 @@
 import { promises as fs, constants as fsc } from "node:fs";
 import { dirname, basename, join } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
+import { classifyMarkerPair } from "./markers.mjs";
 
 const LOCK_SUFFIX  = ".lock";
 const TEMP_PREFIX  = ".tmp-";
@@ -138,26 +139,10 @@ export async function casReplaceMarkers(path, beginMarker, endMarker, buildInner
   // replace because the first-BEGIN..first-END span could envelop unrelated
   // user content. Caller must repair manually (or via the bootstrap module
   // when the state is "missing").
-  function classify(content) {
-    const countAll = (s, needle) => {
-      let n = 0, i = 0;
-      while ((i = s.indexOf(needle, i)) >= 0) { n++; i += needle.length; }
-      return n;
-    };
-    const beginCount = countAll(content, beginMarker);
-    const endCount   = countAll(content, endMarker);
-    if (beginCount === 0 && endCount === 0) return "missing";
-    if (beginCount === 1 && endCount === 1) {
-      const b = content.indexOf(beginMarker);
-      const e = content.indexOf(endMarker, b + beginMarker.length);
-      if (e > b) return "ok";
-    }
-    return "malformed";
-  }
   return await withLock(path, async () => {
     for (let attempt = 0; attempt <= retries; attempt++) {
       const fresh = await readWithStat(path);
-      const state = classify(fresh.content);
+      const state = classifyMarkerPair(fresh.content, beginMarker, endMarker);
       if (state === "missing") {
         return { ok: false, status: "missing" };
       }

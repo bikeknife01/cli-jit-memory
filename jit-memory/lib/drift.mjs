@@ -6,10 +6,13 @@
 //   - file modified after _routing.json was written
 //   - routing.json missing entirely
 //   - markers were just (re)inserted by bootstrap
+//   - generated KB block format/content is stale
 
 import { promises as fs } from "node:fs";
-import { ROUTING_JSON } from "./paths.mjs";
-import { listDomainFiles } from "./sync.mjs";
+import { INSTRUCTIONS_MD, ROUTING_JSON } from "./paths.mjs";
+import { readWithStatOrNull } from "./atomic.mjs";
+import { classifyMarkerPair } from "./markers.mjs";
+import { KB_BEGIN, KB_END, kbBlockEquivalent, listDomainFiles, renderKbBlock } from "./sync.mjs";
 
 export async function detectDrift({ markersResult } = {}) {
   const reasons = [];
@@ -53,6 +56,15 @@ export async function detectDrift({ markersResult } = {}) {
           if (s.mtimeMs > routingStat.mtimeMs) { reasons.push("file_modified"); break; }
         } catch { /* ignore — file vanished mid-scan; covered by file_removed */ }
       }
+    }
+
+    const instructions = await readWithStatOrNull(INSTRUCTIONS_MD);
+    if (instructions && classifyMarkerPair(instructions.content, KB_BEGIN, KB_END) === "ok") {
+      const start = instructions.content.indexOf(KB_BEGIN);
+      const end = instructions.content.indexOf(KB_END, start + KB_BEGIN.length);
+      const inner = instructions.content.slice(start + KB_BEGIN.length, end);
+      const expected = renderKbBlock(routingTable.domains || []);
+      if (!kbBlockEquivalent(inner, expected)) reasons.push("kb_format_outdated");
     }
   }
 

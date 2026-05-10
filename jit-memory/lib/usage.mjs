@@ -2,11 +2,97 @@
 // Privacy: no prompt content, no tags. Only date | slug | hits.
 
 import { promises as fs } from "node:fs";
-import { USAGE_JSON } from "./paths.mjs";
+import { basename } from "node:path";
+import { USAGE_JSON, isValidSlug } from "./paths.mjs";
 import { atomicWrite, withLock } from "./atomic.mjs";
 
 const FLUSH_EVERY_PROMPTS = 10;
 const FLUSH_EVERY_MS      = 5 * 60 * 1000;
+
+export function normalizeUsage(input) {
+  const parsed = input && typeof input === "object" ? input : {};
+  const sourceDomains = parsed.domains && typeof parsed.domains === "object" && !Array.isArray(parsed.domains)
+    ? parsed.domains
+    : {};
+  const domains = {};
+  for (const [slug, value] of Object.entries(sourceDomains)) {
+    if (!isValidSlug(slug) || !value || typeof value !== "object" || Array.isArray(value)) continue;
+    domains[slug] = {
+      hits: Number.isFinite(value.hits) ? Math.max(0, value.hits) : 0,
+      lastHit: Number.isFinite(value.lastHit) ? Math.max(0, value.lastHit) : 0
+    };
+  }
+  return {
+    version: 1,
+    generated: parsed.generated ?? null,
+    domains
+  };
+}
+
+export function usageDomainsForFile(rel, meta = null) {
+  const out = new Set();
+  const fallback = basename(String(rel || ""), ".md");
+  if (isValidSlug(fallback)) out.add(fallback);
+  if (meta && isValidSlug(meta.domain)) out.add(meta.domain);
+  return out;
+}
+
+export async function pruneUsageDomains(activeDomains, { now = new Date() } = {}) {
+  const active = new Set([...activeDomains].filter(isValidSlug));
+  return await withLock(USAGE_JSON, async () => {
+    let parsed;
+    try {
+      const raw = await fs.readFile(USAGE_JSON, "utf8");
+      parsed = JSON.parse(raw);
+    } catch (e) {
+      if (e.code === "ENOENT") {
+        return { ok: true, prunedCount: 0, prunedDomains: [], written: false };
+      }
+      throw e;
+    }
+
+    const normalized = normalizeUsage(parsed);
+    const domains = {};
+    const prunedDomains = [];
+    for (const [slug, value] of Object.entries(normalized.domains)) {
+      if (active.has(slug)) domains[slug] = value;
+      else prunedDomains.push(slug);
+    }
+
+    const next = { version: 1, generated: normalized.generated, domains };
+    const normalizationChanged = !isAlreadyNormalized(parsed, normalized);
+    if (prunedDomains.length === 0 && !normalizationChanged) {
+      return { ok: true, prunedCount: 0, prunedDomains: [], written: false };
+    }
+
+    next.generated = now.toISOString();
+    await atomicWrite(USAGE_JSON, JSON.stringify(next, null, 2));
+    return {
+      ok: true,
+      prunedCount: prunedDomains.length,
+      prunedDomains,
+      written: true
+    };
+  });
+}
+
+function isAlreadyNormalized(parsed, normalized) {
+  if (!parsed || typeof parsed !== "object") return false;
+  if (parsed.version !== normalized.version) return false;
+  if ((parsed.generated ?? null) !== normalized.generated) return false;
+  if (!parsed.domains || typeof parsed.domains !== "object" || Array.isArray(parsed.domains)) return false;
+  const parsedKeys = Object.keys(parsed.domains).sort();
+  const normalizedKeys = Object.keys(normalized.domains).sort();
+  if (parsedKeys.length !== normalizedKeys.length) return false;
+  for (let i = 0; i < parsedKeys.length; i++) {
+    if (parsedKeys[i] !== normalizedKeys[i]) return false;
+    const a = parsed.domains[parsedKeys[i]];
+    const b = normalized.domains[normalizedKeys[i]];
+    if (!a || typeof a !== "object" || Array.isArray(a)) return false;
+    if (a.hits !== b.hits || a.lastHit !== b.lastHit) return false;
+  }
+  return true;
+}
 
 export class UsageTracker {
   constructor({ onFlushError } = {}) {
@@ -71,9 +157,7 @@ export class UsageTracker {
           try {
             const raw = await fs.readFile(USAGE_JSON, "utf8");
             const parsed = JSON.parse(raw);
-            if (parsed && typeof parsed === "object") {
-              current = { version: 1, ...parsed, domains: parsed.domains || {} };
-            }
+            current = normalizeUsage(parsed);
           } catch (e) {
             if (e.code !== "ENOENT") throw e;
           }
@@ -143,7 +227,7 @@ export async function loadUsage() {
   try {
     const raw = await fs.readFile(USAGE_JSON, "utf8");
     const parsed = JSON.parse(raw);
-    return { version: 1, generated: null, domains: {}, ...parsed };
+    return normalizeUsage(parsed);
   } catch (e) {
     if (e.code === "ENOENT") return { version: 1, generated: null, domains: {} };
     throw e;

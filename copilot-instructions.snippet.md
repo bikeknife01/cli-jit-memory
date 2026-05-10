@@ -1,57 +1,31 @@
 <!--
   jit-memory orchestration block.
   Paste everything below this comment into ~/.copilot/copilot-instructions.md.
-  Both marker blocks (QR and KB) must be preserved as empty pairs on first
-  install — the extension fills them in via tool calls and sync.
+  Preserve both marker blocks. The extension fills QR via capture and rewrites
+  the KB block via sync.
 -->
 
 ## Operational Knowledge Base (jit-memory)
 
-The `jit-memory` CLI extension auto-loads relevant lessons before each prompt and exposes capture tools. **Do not edit knowledge files by hand.** If the `jit-memory` CLI extension fails or is unavailable, notify the user and proceed without loading additional lessons or capturing new ones until the tools are available.
+The `jit-memory` extension routes relevant local lessons before prompts and exposes capture tools. **Do not edit knowledge files by hand.** If the extension is unavailable, notify the user and continue without capturing.
 
-### Capture rules
+Call `jit_memory_capture` proactively when a lesson could plausibly recur; a single concrete failure is enough. After non-trivial tool errors, failed commands, rejected edits, dead ends, or workarounds, capture if it could recur or if you are unsure before the next substantive tool batch. Redact secrets, credentials, customer data, private hostnames, unnecessary personal data, and unneeded absolute paths.
 
-When you identify a repeatable failure or pattern, call `jit_memory_capture` immediately. Choose `kind` by the situation:
+Use the capture tool schema to choose `kind`: quick rules for universal behavior, domain updates for existing topics, new domains when none fits, disputed for contradictions, and alias/tag additions when routing missed. On `at_cap`, retry with `demote_target` unless the demotion choice is unclear.
 
-- Universal cross-cutting (no natural domain) → `kind: "quick_rule"`. If returned `at_cap`, pick a Quick Rule to demote and retry with `demote_target`.
-- Lesson belongs to an existing domain → `kind: "domain_update"` with `domain` + `section` ("working" | "broken" | "gotcha").
-- New domain warranted → `kind: "domain_new"` with `domain`, `summary`, 1–12 `tags`, 0–8 `aliases`.
-- Contradicts an existing fact → `kind: "disputed"` with `domain`. Original fact preserved.
-- Same fact applied but routing missed it → `kind: "alias_add"` with `domain` and the missing `tags` or `aliases`.
-
-Ask the user only when:
-
-- Quick Rules are at cap and demotion target is ambiguous, OR
-- A new lesson contradicts an existing fact with no clear reconciliation, OR
-- Domain naming is non-obvious (the lesson plausibly belongs to two existing domains).
-
-The session-start digest (if present) lists items needing review.
-
-### User-driven capture
-
-When the user says "remember…", "note that…", "save this…", "capture…",
-"add this to <domain>", or any equivalent phrasing — treat it as an
-immediate capture intent. Pick the right `kind` yourself using the
-Capture rules above, including creating a new domain (`kind: "domain_new"`)
-when no existing domain fits. Do not ask the user to specify tool names,
-kinds, domains, sections, tags, or schemas — translate their natural
-language into the correct `jit_memory_capture` call based on the Capture
-rules and current context. Confirm only when the Capture rules above
-require it (Quick Rules are at cap and demotion target is ambiguous,
-contradiction without clear reconciliation, or domain naming is genuinely
-ambiguous).
+For user "remember/save/capture/note" requests, translate the request into `jit_memory_capture` yourself; do not ask for tool names, kinds, domains, sections, tags, or schemas unless one of these gates applies: ambiguous domain choice, unresolved contradiction, unclear Quick Rule demotion, or accidental sensitive capture.
 
 ### Quick Rules — managed by jit_memory_capture
 
 <!-- QR:BEGIN -->
 <!-- QR:END -->
 
-### Generated KB index — managed by sync (do not edit between markers)
+### Domain Index
 
 <!-- KB:BEGIN -->
 
-| Tags               | File | Summary |
-| ------------------ | ---- | ------- |
-| _(no domains yet)_ |      |         |
+| Domain             | File |
+| ------------------ | ---- |
+| _(no domains yet)_ |      |
 
 <!-- KB:END -->

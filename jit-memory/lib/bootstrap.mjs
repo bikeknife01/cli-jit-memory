@@ -1,6 +1,6 @@
 // Bootstrap repair: ensure copilot-instructions.md has the QR/KB markers
-// jit-memory needs for capture (Quick Rules block) and sync (Domain Tag
-// Index block). If markers are absent, append minimal stub blocks so the
+// jit-memory needs for capture (Quick Rules block) and sync (Domain Index
+// block). If markers are absent, append minimal stub blocks so the
 // first capture / first sync don't fail with status=invalid_setup.
 //
 // Conservative behavior:
@@ -8,19 +8,24 @@
 //     the user's whole instructions file from this extension is out of scope.
 //   - If a marker pair already exists (even with content between), leave it
 //     alone.
-//   - Inserts are append-only at end-of-file under named ## headings, so we
-//     never touch existing content. Idempotent: a second run is a no-op.
+//   - Inserts are append-only at end-of-file under named headings, so we never
+//     touch existing content. Bootstrap restores markers, not the full snippet
+//     prose. Idempotent: a second run is a no-op.
 //   - Atomic write under withLock — safe vs concurrent capture/sync.
 
 import { promises as fs } from "node:fs";
 import { atomicWrite, withLock, readWithStatOrNull } from "./atomic.mjs";
 import { INSTRUCTIONS_MD } from "./paths.mjs";
 import { QR_BEGIN, QR_END } from "./capture.mjs";
-import { KB_BEGIN, KB_END } from "./sync.mjs";
+import { KB_BEGIN, KB_END, renderKbBlock } from "./sync.mjs";
+import { classifyMarkerPair } from "./markers.mjs";
 
-const QR_STUB = [
-  "",
-  "## Quick Rules",
+const OKB_HEADING = "## Operational Knowledge Base (jit-memory)";
+const QR_HEADING = "### Quick Rules — managed by jit_memory_capture";
+const KB_HEADING = "### Domain Index";
+
+const QR_SECTION = [
+  QR_HEADING,
   "",
   "<!-- jit-memory managed: do not hand-edit between QR:BEGIN and QR:END -->",
   QR_BEGIN,
@@ -28,41 +33,30 @@ const QR_STUB = [
   ""
 ].join("\n");
 
-const KB_STUB = [
-  "",
-  "## Operational Knowledge Base",
-  "",
-  "### Domain Tag Index",
+const KB_SECTION = [
+  KB_HEADING,
   "",
   "<!-- jit-memory managed: do not hand-edit between KB:BEGIN and KB:END -->",
   KB_BEGIN,
+  renderKbBlock([]),
   KB_END,
   ""
 ].join("\n");
 
-function classifyMarkerState(content, begin, end) {
-  if (!content) return "missing";
-  // Count occurrences via global indexOf scan (no regex).
-  const countAll = (s, needle) => {
-    let n = 0, i = 0;
-    while ((i = s.indexOf(needle, i)) >= 0) { n++; i += needle.length; }
-    return n;
-  };
-  const beginCount = countAll(content, begin);
-  const endCount   = countAll(content, end);
-  if (beginCount === 0 && endCount === 0) return "missing";
-  if (beginCount === 1 && endCount === 1) {
-    const b = content.indexOf(begin);
-    const e = content.indexOf(end, b + begin.length);
-    if (e > b) return "ok";
+function partialStub(content, section) {
+  if (new RegExp(`^${OKB_HEADING.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*$`, "m").test(content)) {
+    return ["", section].join("\n");
   }
-  // Anything else — orphan, duplicate, nested, reversed — is malformed and
-  // unsafe to "repair" by appending. Appending in those states would leave
-  // a destructive marker range (orphan BEGIN paired with the appended END
-  // could span unrelated user content; capture/sync's casReplaceMarkers
-  // would later overwrite it).
-  return "malformed";
+  return ["", OKB_HEADING, "", section].join("\n");
 }
+
+const COMBINED_STUB = [
+  "",
+  OKB_HEADING,
+  "",
+  QR_SECTION,
+  KB_SECTION
+].join("\n");
 
 /**
  * Ensure QR + KB markers exist in INSTRUCTIONS_MD.
@@ -91,8 +85,8 @@ export async function ensureMarkers() {
   }
   result.fileExists = true;
 
-  result.qrState = classifyMarkerState(existing.content, QR_BEGIN, QR_END);
-  result.kbState = classifyMarkerState(existing.content, KB_BEGIN, KB_END);
+  result.qrState = classifyMarkerPair(existing.content, QR_BEGIN, QR_END);
+  result.kbState = classifyMarkerPair(existing.content, KB_BEGIN, KB_END);
 
   const malformed = [];
   if (result.qrState === "malformed") malformed.push("QR");
@@ -110,8 +104,8 @@ export async function ensureMarkers() {
     await withLock(INSTRUCTIONS_MD, async () => {
       // Re-read inside the lock to avoid lost-update on concurrent writers.
       const cur = await fs.readFile(INSTRUCTIONS_MD, "utf8");
-      const qrNow = classifyMarkerState(cur, QR_BEGIN, QR_END);
-      const kbNow = classifyMarkerState(cur, KB_BEGIN, KB_END);
+      const qrNow = classifyMarkerPair(cur, QR_BEGIN, QR_END);
+      const kbNow = classifyMarkerPair(cur, KB_BEGIN, KB_END);
       // Reflect under-lock state in the result envelope so callers see the
       // final observed state, not the pre-lock snapshot.
       result.qrState = qrNow;
@@ -123,14 +117,18 @@ export async function ensureMarkers() {
         return;
       }
       let next = cur;
-      if (qrNow === "missing") {
+      if (qrNow === "missing" && kbNow === "missing") {
         if (!next.endsWith("\n")) next += "\n";
-        next += QR_STUB;
+        next += COMBINED_STUB;
         result.qrInserted = true;
-      }
-      if (kbNow === "missing") {
+        result.kbInserted = true;
+      } else if (qrNow === "missing") {
         if (!next.endsWith("\n")) next += "\n";
-        next += KB_STUB;
+        next += partialStub(next, QR_SECTION);
+        result.qrInserted = true;
+      } else if (kbNow === "missing") {
+        if (!next.endsWith("\n")) next += "\n";
+        next += partialStub(next, KB_SECTION);
         result.kbInserted = true;
       }
       if (next !== cur) {

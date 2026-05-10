@@ -10,6 +10,11 @@ import { isValidSlug } from "./paths.mjs";
 const RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/;
 
 const KIND_VALUES = new Set(["fact", "protocol", "reference"]);
+export const TAG_CAP = 12;
+export const ALIAS_CAP = 8;
+export const TAG_RE = /^[a-z0-9][a-z0-9-]{0,39}$/;
+export const ALIAS_MIN_CHARS = 3;
+export const ALIAS_MAX_CHARS = 40;
 
 export function parse(text) {
   if (typeof text !== "string") throw new Error("frontmatter.parse: text must be a string");
@@ -53,20 +58,20 @@ export function validateMeta(meta) {
   if (typeof meta.summary !== "string" || meta.summary.length === 0 || meta.summary.length > 200) {
     errors.push("summary must be a non-empty string ≤200 chars");
   }
-  if (!Array.isArray(meta.tags) || meta.tags.length < 1 || meta.tags.length > 12) {
+  if (!Array.isArray(meta.tags) || meta.tags.length < 1 || meta.tags.length > TAG_CAP) {
     errors.push("tags must be an array of 1–12 strings");
   } else {
     for (const t of meta.tags) {
-      if (typeof t !== "string" || !/^[a-z0-9][a-z0-9-]{0,39}$/.test(t)) {
+      if (typeof t !== "string" || !TAG_RE.test(t)) {
         errors.push(`tags entry invalid: ${JSON.stringify(t)} (lowercase, digits, hyphens, ≤40 chars)`);
       }
     }
   }
-  if (!Array.isArray(meta.aliases) || meta.aliases.length > 8) {
+  if (!Array.isArray(meta.aliases) || meta.aliases.length > ALIAS_CAP) {
     errors.push("aliases must be an array of 0–8 strings");
   } else {
     for (const a of meta.aliases) {
-      if (typeof a !== "string" || a.length < 3 || a.length > 40) {
+      if (typeof a !== "string" || a.length < ALIAS_MIN_CHARS || a.length > ALIAS_MAX_CHARS) {
         errors.push(`alias invalid: ${JSON.stringify(a)} (3–40 chars)`);
       }
     }

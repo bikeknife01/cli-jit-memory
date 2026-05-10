@@ -5,7 +5,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -16,9 +16,25 @@ process.env.JITMEM_TEST_MODE = "1";
 await mkdir(join(tmp, "knowledge"), { recursive: true });
 await mkdir(join(tmp, "knowledge", "_archive"), { recursive: true });
 
-const { route } = await import("../lib/router.mjs");
-const { UsageTracker } = await import("../lib/usage.mjs");
-const { assertRoutableKnowledgeFile } = await import("../lib/paths.mjs");
+const { route, loadRouting, consumeInvalidEntryCount } = await import("../lib/router.mjs");
+const { UsageTracker, pruneUsageDomains } = await import("../lib/usage.mjs");
+const { assertRoutableKnowledgeFile, ROUTING_JSON } = await import("../lib/paths.mjs");
+const { resetRouterInvalidEntryCount } = await import("./support/test-hooks.mjs");
+const paths = await import("../lib/paths.mjs");
+
+function domainFile(domain, opts = {}) {
+  const meta = {
+    domain,
+    kind: "fact",
+    summary: `${domain} summary`,
+    tags: [domain],
+    aliases: [],
+    see_also: [],
+    verified: "2026-05-09",
+    deprecated: opts.deprecated ?? null
+  };
+  return `---\n${JSON.stringify(meta, null, 2)}\n---\n# ${domain}\n`;
+}
 
 // ── routing path validation ────────────────────────────────────────────────
 test("route() drops entries whose file_rel escapes knowledge root", () => {
@@ -143,8 +159,7 @@ test("route() see-also entries are also validated", () => {
 });
 
 test("router invalid-entry counter increments and resets via consumeInvalidEntryCount", async () => {
-  const { consumeInvalidEntryCount } = await import("../lib/router.mjs");
-  consumeInvalidEntryCount(); // drain whatever previous tests left
+  resetRouterInvalidEntryCount();
   const table = {
     version: 3,
     domains: [
@@ -156,6 +171,24 @@ test("router invalid-entry counter increments and resets via consumeInvalidEntry
   route("zeta", table);
   assert.equal(consumeInvalidEntryCount(), 2, "two invalid entries must be counted");
   assert.equal(consumeInvalidEntryCount(), 0, "consumer resets the counter");
+});
+
+test("loadRouting drops invalid unmatched entries and counts them", async () => {
+  resetRouterInvalidEntryCount();
+  await writeFile(ROUTING_JSON, JSON.stringify({
+    version: 3,
+    domains: [
+      { domain: "valid_missing", file_rel: "valid_missing.md", tags: ["theta"], summary: "kept" },
+      { domain: "bad_ext", file_rel: "bad.txt", tags: ["theta"], summary: "drop" },
+      { domain: "bad_escape", file_rel: "../escape.md", tags: ["theta"], summary: "drop" },
+      { file_rel: "undefined.md", tags: ["theta"], summary: "drop missing domain" }
+    ]
+  }), "utf8");
+
+  const table = await loadRouting({ force: true });
+  assert.deepEqual(table.domains.map(d => d.domain), ["valid_missing"]);
+  assert.equal(consumeInvalidEntryCount(), 3);
+  assert.equal(consumeInvalidEntryCount(), 0);
 });
 
 test("flush() with empty deltas resets prompt counter (no busy-loop on zero-match periods)", async () => {
@@ -321,4 +354,116 @@ test("flushFinal does not falsely stall when flush reports ok but deltas size is
   assert.equal(r.stalled, false, "must not stall when flush returns ok");
   assert.equal(r.deltasRemaining, 0);
   assert.equal(calls, 2, "loop continues past size-unchanged successful flush");
+});
+
+test("pruneUsageDomains removes stale keys and preserves active usage", async () => {
+  await writeFile(paths.USAGE_JSON, JSON.stringify({
+    version: 1,
+    generated: "2026-05-09T00:00:00.000Z",
+    domains: {
+      keep: { hits: 7, lastHit: 10 },
+      stale: { hits: 3, lastHit: 4 }
+    }
+  }, null, 2), "utf8");
+
+  const r = await pruneUsageDomains(new Set(["keep"]), { now: new Date("2026-05-09T01:00:00.000Z") });
+  assert.equal(r.prunedCount, 1);
+  assert.deepEqual(r.prunedDomains, ["stale"]);
+  const usage = JSON.parse(await readFile(paths.USAGE_JSON, "utf8"));
+  assert.deepEqual(Object.keys(usage.domains), ["keep"]);
+  assert.deepEqual(usage.domains.keep, { hits: 7, lastHit: 10 });
+});
+
+test("pruneUsageDomains is a no-op for missing and already-normalized usage", async () => {
+  await rm(paths.USAGE_JSON, { force: true });
+  const missing = await pruneUsageDomains(new Set(["keep"]));
+  assert.equal(missing.written, false);
+
+  const normalized = JSON.stringify({
+    version: 1,
+    generated: "2026-05-09T00:00:00.000Z",
+    domains: { keep: { hits: 1, lastHit: 2 } }
+  }, null, 2);
+  await writeFile(paths.USAGE_JSON, normalized, "utf8");
+  const r = await pruneUsageDomains(new Set(["keep"]));
+  assert.equal(r.written, false);
+  assert.equal(await readFile(paths.USAGE_JSON, "utf8"), normalized);
+});
+
+test("pruneUsageDomains normalizes malformed domain entries", async () => {
+  await writeFile(paths.USAGE_JSON, JSON.stringify({
+    version: 1,
+    generated: null,
+    domains: {
+      keep: { hits: "bad", lastHit: -5 },
+      malformed: "bad"
+    }
+  }, null, 2), "utf8");
+
+  const r = await pruneUsageDomains(new Set(["keep", "malformed"]), { now: new Date("2026-05-09T01:00:00.000Z") });
+  assert.equal(r.written, true);
+  assert.equal(r.prunedCount, 0);
+  const usage = JSON.parse(await readFile(paths.USAGE_JSON, "utf8"));
+  assert.deepEqual(usage.domains, { keep: { hits: 0, lastHit: 0 } });
+});
+
+test("syncNow prunes removed usage but preserves invalid-frontmatter filename fallback", async () => {
+  const { syncNow } = await import("../lib/sync.mjs");
+  await writeFile(join(tmp, "knowledge", "syncactive.md"), domainFile("syncactive"), "utf8");
+  await writeFile(join(tmp, "knowledge", "fallbackkeep.md"), "---\nnot: [valid\n---\n", "utf8");
+  await writeFile(paths.USAGE_JSON, JSON.stringify({
+    version: 1,
+    generated: null,
+    domains: {
+      syncactive: { hits: 1, lastHit: 2 },
+      fallbackkeep: { hits: 3, lastHit: 4 },
+      removedsync: { hits: 5, lastHit: 6 }
+    }
+  }, null, 2), "utf8");
+
+  const r = await syncNow({ debounceMs: 0 });
+  assert.equal(r.usagePrunedCount, 1);
+  assert.deepEqual(r.usagePrunedDomains, ["removedsync"]);
+  const usage = JSON.parse(await readFile(paths.USAGE_JSON, "utf8"));
+  assert.deepEqual(Object.keys(usage.domains).sort(), ["fallbackkeep", "syncactive"]);
+  await rm(join(tmp, "knowledge", "syncactive.md"), { force: true });
+  await rm(join(tmp, "knowledge", "fallbackkeep.md"), { force: true });
+});
+
+test("audit prunes stale usage as maintenance without creating a digest", async () => {
+  const { audit } = await import("../lib/audit.mjs");
+  await writeFile(join(tmp, "knowledge", "auditactive.md"), domainFile("auditactive"), "utf8");
+  await writeFile(paths.USAGE_JSON, JSON.stringify({
+    version: 1,
+    generated: null,
+    domains: {
+      auditactive: { hits: 1, lastHit: Date.now() },
+      auditstale: { hits: 2, lastHit: Date.now() }
+    }
+  }, null, 2), "utf8");
+  await rm(paths.DIGEST_MD, { force: true });
+
+  const r = await audit({ archivalAllowed: false });
+  assert.equal(r.healthy, true);
+  assert.equal(r.digest, null);
+  assert.deepEqual(r.maintenance.usagePruned.prunedDomains, ["auditstale"]);
+  await assert.rejects(() => readFile(paths.DIGEST_MD, "utf8"));
+});
+
+test("audit archival prunes usage for archived domains via sync", async () => {
+  const { audit } = await import("../lib/audit.mjs");
+  await writeFile(join(tmp, "knowledge", "archiveusage.md"), domainFile("archiveusage", { deprecated: "2026-01-01" }), "utf8");
+  await writeFile(paths.USAGE_JSON, JSON.stringify({
+    version: 1,
+    generated: null,
+    domains: {
+      archiveusage: { hits: 9, lastHit: Date.now() }
+    }
+  }, null, 2), "utf8");
+
+  const r = await audit({ archivalAllowed: true });
+  assert.ok(r.archived.some(a => a.from === "archiveusage.md"));
+  assert.ok(r.maintenance.usagePruned.prunedDomains.includes("archiveusage"));
+  const usage = JSON.parse(await readFile(paths.USAGE_JSON, "utf8"));
+  assert.equal(usage.domains.archiveusage, undefined);
 });

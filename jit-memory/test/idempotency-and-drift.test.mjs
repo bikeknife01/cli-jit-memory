@@ -40,13 +40,14 @@ function frontmatter(domain, opts = {}) {
 await writeFile(join(KNOW, "alpha.md"), frontmatter("alpha", { tags: ["a"] }), "utf8");
 await writeFile(join(KNOW, "beta.md"),  frontmatter("beta",  { tags: ["b"] }), "utf8");
 
-const { syncNow, _resetSchedulerForTests } = await import("../lib/sync.mjs");
+const { syncNow } = await import("../lib/sync.mjs");
 const { detectDrift } = await import("../lib/drift.mjs");
+const { resetSyncScheduler } = await import("./support/test-hooks.mjs");
 
 after(async () => { await rm(tmp, { recursive: true, force: true }); });
 
 test("first sync writes routing + KB; second sync is a no-op", async () => {
-  _resetSchedulerForTests();
+  resetSyncScheduler();
   const r1 = await syncNow({ debounceMs: 0 });
   assert.equal(r1.domainsWritten, 2);
   assert.equal(r1.routingWritten, true,  "first pass must write routing");
@@ -58,7 +59,7 @@ test("first sync writes routing + KB; second sync is a no-op", async () => {
   // Sleep a tick so any rewrite would actually bump mtime.
   await new Promise(r => setTimeout(r, 25));
 
-  _resetSchedulerForTests();
+  resetSyncScheduler();
   const r2 = await syncNow({ debounceMs: 0 });
   assert.equal(r2.domainsWritten, 2);
   assert.equal(r2.routingWritten, false, "second pass must NOT rewrite routing");
@@ -75,10 +76,69 @@ test("detectDrift: no drift after a clean sync", async () => {
   assert.equal(drift.drifted, false, `expected no drift, got: ${drift.reasons.join(",")}`);
 });
 
+test("detectDrift: old static KB table format triggers one-shot heal", async () => {
+  const current = await readFile(INSTR, "utf8");
+  const oldKb = [
+    "_Last generated: 2026-04-01_",
+    "",
+    "| Tags | File | Summary |",
+    "|---|---|---|",
+    "| a | alpha.md | alpha summary |",
+    "| b | beta.md | beta summary |"
+  ].join("\n");
+  const oldFormat = current.replace(
+    /<!-- KB:BEGIN -->[\s\S]*?<!-- KB:END -->/,
+    `<!-- KB:BEGIN -->\n${oldKb}\n<!-- KB:END -->`
+  );
+  await writeFile(INSTR, oldFormat, "utf8");
+
+  const drift = await detectDrift();
+  assert.equal(drift.drifted, true);
+  assert.ok(drift.reasons.includes("kb_format_outdated"),
+    `expected kb_format_outdated reason, got: ${drift.reasons.join(",")}`);
+
+  resetSyncScheduler();
+  const r = await syncNow({ debounceMs: 0 });
+  assert.equal(r.kbStatus, "ok");
+  const healed = await readFile(INSTR, "utf8");
+  assert.match(healed, /\| Domain \| File \|/);
+  assert.doesNotMatch(healed, /\| Tags \| File \| Summary \|/);
+
+  const after = await detectDrift();
+  assert.equal(after.drifted, false, `expected no drift after heal, got: ${after.reasons.join(",")}`);
+});
+
+test("detectDrift: KB date-only difference does not trigger format heal", async () => {
+  const current = await readFile(INSTR, "utf8");
+  const dateChanged = current.replace(/_Last generated: \d{4}-\d{2}-\d{2}_/, "_Last generated: 1999-01-01_");
+  await writeFile(INSTR, dateChanged, "utf8");
+
+  const drift = await detectDrift();
+  assert.ok(!drift.reasons.includes("kb_format_outdated"),
+    `unexpected kb_format_outdated reason: ${drift.reasons.join(",")}`);
+});
+
 test("detectDrift: kb_inserted forces drift even with stable files", async () => {
   const drift = await detectDrift({ markersResult: { kbInserted: true } });
   assert.equal(drift.drifted, true);
   assert.ok(drift.reasons.includes("kb_inserted"));
+});
+
+test("detectDrift: missing instructions does not force KB format heal", async () => {
+  await rm(INSTR, { force: true });
+  try {
+    const drift = await detectDrift();
+    assert.ok(!drift.reasons.includes("kb_format_outdated"),
+      `unexpected kb_format_outdated reason: ${drift.reasons.join(",")}`);
+  } finally {
+    await writeFile(
+      INSTR,
+      "# header\n\n<!-- QR:BEGIN -->\n<!-- QR:END -->\n\n<!-- KB:BEGIN -->\n<!-- KB:END -->\n",
+      "utf8"
+    );
+    resetSyncScheduler();
+    await syncNow({ debounceMs: 0 });
+  }
 });
 
 test("detectDrift: file removed (renamed to hidden) triggers heal", async () => {
@@ -123,7 +183,7 @@ test("detectDrift: modified file triggers file_modified", async () => {
 
 test("end-to-end: sync after rename heals routing", async () => {
   await rename(join(KNOW, "beta.md"), join(KNOW, "_beta.md"));
-  _resetSchedulerForTests();
+  resetSyncScheduler();
   const r = await syncNow({ debounceMs: 0 });
   assert.equal(r.domainsWritten, 1, "beta should have been removed from routing");
   assert.equal(r.routingWritten, true);

@@ -10,7 +10,8 @@
 
 import { promises as fs } from "node:fs";
 import { join } from "node:path";
-import { ROUTING_JSON, KNOWLEDGE_ROOT, assertRoutableKnowledgeFile } from "./paths.mjs";
+import { ROUTING_JSON, KNOWLEDGE_ROOT, assertRoutableKnowledgeFile, isValidSlug } from "./paths.mjs";
+import { registerTestHooks } from "./test-hook-registry.mjs";
 
 const STALE_DAYS = 90;
 
@@ -28,6 +29,42 @@ export function consumeInvalidEntryCount() {
   const n = _invalidEntryCount;
   _invalidEntryCount = 0;
   return n;
+}
+
+function resetInvalidEntryCountForTestHook() {
+  _invalidEntryCount = 0;
+}
+
+registerTestHooks("router", { resetInvalidEntryCount: resetInvalidEntryCountForTestHook });
+
+function sanitizeRoutingTable(table) {
+  if (!table || typeof table !== "object") {
+    return { version: 3, domains: [] };
+  }
+  if (!Array.isArray(table.domains)) {
+    return { ...table, domains: [] };
+  }
+  const domains = [];
+  let dropped = 0;
+  for (const e of table.domains) {
+    if (!e || typeof e !== "object" || !isValidSlug(e.domain)) {
+      dropped++;
+      continue;
+    }
+    if (e.file_rel !== undefined && typeof e.file_rel !== "string") {
+      dropped++;
+      continue;
+    }
+    const rel = e.file_rel || `${e.domain}.md`;
+    try {
+      assertRoutableKnowledgeFile(join(KNOWLEDGE_ROOT, rel));
+      domains.push(e);
+    } catch {
+      dropped++;
+    }
+  }
+  if (dropped > 0) _invalidEntryCount += dropped;
+  return { ...table, domains };
 }
 
 export async function loadRouting({ force = false } = {}) {
@@ -51,7 +88,7 @@ export async function loadRouting({ force = false } = {}) {
   let table;
   try { table = JSON.parse(raw); }
   catch { return { version: 3, domains: [] }; }
-  if (!Array.isArray(table.domains)) table.domains = [];
+  table = sanitizeRoutingTable(table);
   const st = await fs.stat(ROUTING_JSON);
   cache = { key: `${st.mtimeMs}:${st.size}`, table };
   return table;

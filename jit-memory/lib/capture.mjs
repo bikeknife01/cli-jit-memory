@@ -8,40 +8,91 @@
 
 import { promises as fs } from "node:fs";
 import {
-  INSTRUCTIONS_MD,
-  resolveDomainFile, isValidSlug
+  INSTRUCTIONS_MD, KNOWLEDGE_ROOT,
+  resolveDomainFile, isValidSlug, assertNoKnowledgeSymlink, KnowledgeSymlinkError
 } from "./paths.mjs";
 import {
   atomicWrite, withLock, readWithStatOrNull, casReplaceMarkers
 } from "./atomic.mjs";
-import { parse, stringify, validateMeta } from "./frontmatter.mjs";
+import {
+  parse, stringify, validateMeta,
+  TAG_CAP, ALIAS_CAP, TAG_RE, ALIAS_MIN_CHARS, ALIAS_MAX_CHARS
+} from "./frontmatter.mjs";
 import { syncNow } from "./sync.mjs";
 import { routeFromDisk, invalidateRoutingCache } from "./router.mjs";
+import { registerTestHooks } from "./test-hook-registry.mjs";
 
 export const QR_BEGIN = "<!-- QR:BEGIN -->";
 export const QR_END   = "<!-- QR:END -->";
 const QR_CAP = 10;
+const QR_MAX_CHARS = 280;
 
 // Managed marker tokens that must NEVER appear inside captured content,
 // summaries, tags, or aliases. If they did, an attacker (or a careless agent)
-// could break out of the QR/KB managed regions and inject arbitrary instructions
-// that the parent CLI would treat as authoritative on the next session start.
-//
-// NOTE: this list is hard-coded and covers all managed regions known to the
-// extension today (QR/KB own regions plus the efficiency-retro markers).
-// If the user adds a new managed region in copilot-instructions.md, this list
-// must be updated. A future improvement is to derive forbidden tokens from
-// the live instructions file at startup.
-const FORBIDDEN_MARKERS = [
+// could break out of managed regions and inject arbitrary instructions that
+// the parent CLI would treat as authoritative on the next session start.
+const STATIC_FORBIDDEN_MARKERS = [
   "<!-- QR:BEGIN -->", "<!-- QR:END -->",
   "<!-- KB:BEGIN -->", "<!-- KB:END -->",
   "<!-- efficiency-retro:managed-start", "<!-- efficiency-retro:managed-end"
 ];
 
-function findForbiddenMarker(s) {
+let dynamicForbiddenMarkers = [];
+
+function isManagedMarkerComment(inner) {
+  const trimmed = inner.trim();
+  if (/\bmanaged-(?:start|end)\b/i.test(trimmed)) return true;
+  // BEGIN/END markers are intentionally canonical uppercase; item #8 handles
+  // whitespace/case variants as malformed marker state.
+  return /^[A-Z][A-Z0-9_-]*:(?:BEGIN|END)$/.test(trimmed);
+}
+
+function discoverManagedMarkerComments(content) {
+  const found = [];
+  const seen = new Set();
+  const re = /<!--([\s\S]*?)-->/g;
+  let match;
+  while ((match = re.exec(content)) !== null) {
+    if (!isManagedMarkerComment(match[1])) continue;
+    const token = match[0];
+    const key = token.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    found.push(token);
+  }
+  return found;
+}
+
+// Dynamic discovery is a startup/session snapshot. Known current markers remain
+// protected by STATIC_FORBIDDEN_MARKERS if discovery cannot read instructions.
+export async function refreshForbiddenMarkers({ instructionsPath = INSTRUCTIONS_MD } = {}) {
+  try {
+    const content = await fs.readFile(instructionsPath, "utf8");
+    dynamicForbiddenMarkers = discoverManagedMarkerComments(content);
+    return { ok: true, discoveredCount: dynamicForbiddenMarkers.length, markers: [...dynamicForbiddenMarkers] };
+  } catch (e) {
+    if (e?.code === "ENOENT") {
+      dynamicForbiddenMarkers = [];
+      return {
+        ok: false,
+        discoveredCount: 0,
+        markers: [],
+        error: "instructions file not found"
+      };
+    }
+    return {
+      ok: false,
+      discoveredCount: dynamicForbiddenMarkers.length,
+      markers: [...dynamicForbiddenMarkers],
+      error: String(e?.message || e)
+    };
+  }
+}
+
+function findForbiddenMarker(s, dynamicMarkers = dynamicForbiddenMarkers) {
   if (typeof s !== "string") return null;
   const lower = s.toLowerCase();
-  for (const m of FORBIDDEN_MARKERS) {
+  for (const m of [...STATIC_FORBIDDEN_MARKERS, ...dynamicMarkers]) {
     if (lower.includes(m.toLowerCase())) return m;
   }
   return null;
@@ -49,12 +100,12 @@ function findForbiddenMarker(s) {
 
 // Walk every string field in args (recursively into arrays) and reject if any
 // contains a managed marker token. Object keys are not inspected — only values.
-function assertNoForbiddenMarkers(args) {
+function assertNoForbiddenMarkers(args, dynamicMarkers) {
   const stack = [args];
   while (stack.length) {
     const cur = stack.pop();
     if (typeof cur === "string") {
-      const hit = findForbiddenMarker(cur);
+      const hit = findForbiddenMarker(cur, dynamicMarkers);
       if (hit) return hit;
     } else if (Array.isArray(cur)) {
       for (const v of cur) stack.push(v);
@@ -71,17 +122,15 @@ const today = () => new Date().toISOString().slice(0, 10);
 // returns a sync-status sub-object so the caller can preserve the capture's
 // business `status` (the data IS already on disk) even if downstream sync fails.
 //
-// `_syncFn` is a closure-bound reference so tests can swap it via
-// _setSyncFnForTests when JITMEM_TEST_MODE=1. Gated by env var so production
-// callers cannot accidentally repoint sync.
+// `_syncFn` is a closure-bound reference so tests can swap it through the
+// dedicated test-hook module without exporting test seams from this module.
 let _syncFn = syncNow;
 
-export function _setSyncFnForTests(fn) {
-  if (process.env.JITMEM_TEST_MODE !== "1") {
-    throw new Error("_setSyncFnForTests is only available when JITMEM_TEST_MODE=1");
-  }
+function setSyncFnForTestHook(fn) {
   _syncFn = typeof fn === "function" ? fn : syncNow;
 }
+
+registerTestHooks("capture", { setSyncFn: setSyncFnForTestHook });
 
 async function runPostWriteSync() {
   try {
@@ -94,13 +143,26 @@ async function runPostWriteSync() {
   }
 }
 
+async function symlinkPolicyFailure(target) {
+  try {
+    await assertNoKnowledgeSymlink(target);
+    return null;
+  } catch (e) {
+    if (e instanceof KnowledgeSymlinkError) {
+      return { status: "invalid_setup", summary: `knowledge symlink policy: ${e.message}; manual repair required` };
+    }
+    return { status: "invalid_setup", summary: `knowledge path check failed: ${e.message}` };
+  }
+}
+
 // ── public dispatcher ───────────────────────────────────────────────────────
 export async function capture(args = {}) {
   const kind = args.kind;
   if (typeof args.content !== "string" || args.content.trim().length === 0) {
     return { status: "invalid", summary: "content (string) is required" };
   }
-  const marker = assertNoForbiddenMarkers(args);
+  const discovery = await refreshForbiddenMarkers();
+  const marker = assertNoForbiddenMarkers(args, discovery.markers);
   if (marker) {
     return { status: "invalid", summary: `content contains a managed marker token (${marker}); refusing to capture` };
   }
@@ -117,11 +179,24 @@ export async function capture(args = {}) {
 
 // ── quick_rule ──────────────────────────────────────────────────────────────
 async function captureQuickRule({ content, demote_target }) {
-  const ruleLine = `- ${content.trim()}`;
+  const trimmedContent = content.trim();
+  if (trimmedContent.length > QR_MAX_CHARS) {
+    return {
+      status: "invalid",
+      summary: `Quick Rule content exceeds ${QR_MAX_CHARS} characters (${trimmedContent.length}); shorten before capture`
+    };
+  }
+  const ruleLine = `- ${trimmedContent}`;
   let outcome = null; // captured by the buildInner callback for the result message
 
   const r = await casReplaceMarkers(INSTRUCTIONS_MD, QR_BEGIN, QR_END, (_full, freshInner) => {
-    const lines = freshInner.split("\n").map(l => l.trim()).filter(l => /^[-*]\s+\S/.test(l));
+    const rows = freshInner.split("\n").map(l => l.trim());
+    const unknownLines = rows.filter(l => l && !/^[-*]\s+\S/.test(l));
+    if (unknownLines.length > 0) {
+      outcome = { status: "non_list", unknownLines: unknownLines.length };
+      return null;
+    }
+    const lines = rows.filter(l => /^[-*]\s+\S/.test(l));
 
     if (lines.length >= QR_CAP) {
       if (!demote_target) {
@@ -174,6 +249,8 @@ async function captureQuickRule({ content, demote_target }) {
       };
     case "invalid_setup":
       return { status: "invalid_setup", summary: `Quick Rules block already over cap (${outcome.overCap}); manual cleanup required.` };
+    case "non_list":
+      return { status: "invalid_setup", summary: `Quick Rules block contains non-list content (${outcome.unknownLines} line(s)); manual cleanup required.` };
     case "ok":
       // CAS may still have failed even though the callback succeeded.
       if (!r.ok) return { status: r.status, summary: `instructions update ${r.status}` };
@@ -202,6 +279,15 @@ async function captureDomainNew({ content, domain, summary, tags, aliases = [], 
   let target;
   try { target = resolveDomainFile(domain); }
   catch (e) { return { status: "invalid", summary: e.message }; }
+  {
+    const symlinkFailure = await symlinkPolicyFailure(target);
+    if (symlinkFailure) return symlinkFailure;
+  }
+  await fs.mkdir(KNOWLEDGE_ROOT, { recursive: true });
+  {
+    const symlinkFailure = await symlinkPolicyFailure(target);
+    if (symlinkFailure) return symlinkFailure;
+  }
 
   const sectionHeader = pickSectionHeader(section);
   const body = [
@@ -223,6 +309,8 @@ async function captureDomainNew({ content, domain, summary, tags, aliases = [], 
   // domain_new calls for the same slug both pass the existence check and one
   // silently clobbers the other.
   const lockResult = await withLock(target, async () => {
+    const symlinkFailure = await symlinkPolicyFailure(target);
+    if (symlinkFailure) return symlinkFailure;
     try {
       await fs.access(target);
       return { conflict: true };
@@ -232,6 +320,7 @@ async function captureDomainNew({ content, domain, summary, tags, aliases = [], 
     await atomicWrite(target, stringify(meta, body));
     return { conflict: false };
   });
+  if (lockResult.status === "invalid_setup") return lockResult;
   if (lockResult.conflict) return { status: "conflict", summary: `domain already exists: ${domain}` };
 
   const sync = await runPostWriteSync();
@@ -242,10 +331,16 @@ async function captureDomainNew({ content, domain, summary, tags, aliases = [], 
 async function captureDomainUpdate({ content, domain, section = "working" }) {
   if (!isValidSlug(domain)) return { status: "invalid", summary: `invalid domain slug: ${domain}` };
   const target = resolveDomainFile(domain);
+  {
+    const symlinkFailure = await symlinkPolicyFailure(target);
+    if (symlinkFailure) return symlinkFailure;
+  }
 
   // Read-modify-write inside the lock so a concurrent writer cannot land
   // between our read and our write.
   const result = await withLock(target, async () => {
+    const symlinkFailure = await symlinkPolicyFailure(target);
+    if (symlinkFailure) return symlinkFailure;
     const fresh = await readWithStatOrNull(target);
     if (!fresh) return { status: "not_found", summary: `domain file not found: ${domain}.md` };
 
@@ -267,6 +362,8 @@ async function captureDomainUpdate({ content, domain, section = "working" }) {
       nextBody = body.replace(/\s*$/, "\n") + `\n## ${header}\n\n- ${content.trim()}\n`;
     }
     const nextMeta = { ...parsed.meta, verified: today() };
+    const v = validateMeta(nextMeta);
+    if (!v.ok) return { status: "invalid_setup", summary: `frontmatter validate (manual repair required): ${v.errors.join("; ")}` };
     await atomicWrite(target, stringify(nextMeta, nextBody));
     return { status: "ok", summary: `Appended to ## ${header} in ${domain}.md`, file: target };
   });
@@ -280,8 +377,14 @@ async function captureDomainUpdate({ content, domain, section = "working" }) {
 async function captureDisputed({ content, domain }) {
   if (!isValidSlug(domain)) return { status: "invalid", summary: `invalid domain slug: ${domain}` };
   const target = resolveDomainFile(domain);
+  {
+    const symlinkFailure = await symlinkPolicyFailure(target);
+    if (symlinkFailure) return symlinkFailure;
+  }
 
   return await withLock(target, async () => {
+    const symlinkFailure = await symlinkPolicyFailure(target);
+    if (symlinkFailure) return symlinkFailure;
     const fresh = await readWithStatOrNull(target);
     if (!fresh) return { status: "not_found", summary: `domain file not found: ${domain}.md` };
 
@@ -310,9 +413,23 @@ async function captureDisputed({ content, domain }) {
 // ── alias_add ───────────────────────────────────────────────────────────────
 async function captureAliasAdd({ content, domain, tags = [], aliases = [] }) {
   if (!isValidSlug(domain)) return { status: "invalid", summary: `invalid domain slug: ${domain}` };
+  const requested = normalizeAliasAddRequest(tags, aliases);
+  if (!requested.ok) {
+    return {
+      status: "invalid",
+      summary: `invalid alias_add request: ${requested.errors.join("; ")}`,
+      invalid: requested.invalid
+    };
+  }
   const target = resolveDomainFile(domain);
+  {
+    const symlinkFailure = await symlinkPolicyFailure(target);
+    if (symlinkFailure) return symlinkFailure;
+  }
 
   const result = await withLock(target, async () => {
+    const symlinkFailure = await symlinkPolicyFailure(target);
+    if (symlinkFailure) return symlinkFailure;
     const fresh = await readWithStatOrNull(target);
     if (!fresh) return { status: "not_found", summary: `domain file not found: ${domain}.md` };
 
@@ -321,27 +438,69 @@ async function captureAliasAdd({ content, domain, tags = [], aliases = [] }) {
     catch (e) { return { status: "invalid_setup", summary: `frontmatter parse: ${e.message}` }; }
 
     const meta = parsed.meta;
-    const beforeTags = new Set(meta.tags || []);
-    const beforeAls  = new Set(meta.aliases || []);
-    for (const t of tags)    if (typeof t === "string") beforeTags.add(t);
-    for (const a of aliases) if (typeof a === "string") beforeAls.add(a);
-    meta.tags    = [...beforeTags].slice(0, 12);
-    meta.aliases = [...beforeAls].slice(0, 8);
-    meta.verified = today();
+    const existingValid = validateExistingAliasAddMeta(meta);
+    if (!existingValid.ok) {
+      return { status: "invalid_setup", summary: `frontmatter validate (manual repair required): ${existingValid.errors.join("; ")}` };
+    }
 
-    const v = validateMeta(meta);
-    if (!v.ok) return { status: "invalid", summary: v.errors.join("; ") };
+    const existingTags = meta.tags || [];
+    const existingAliases = meta.aliases || [];
+    const beforeTags = new Set(existingTags);
+    const beforeAls  = new Set(existingAliases);
+    const mergedTags = new Set(existingTags);
+    const mergedAliases = new Set(existingAliases);
+    for (const t of requested.tags) mergedTags.add(t);
+    for (const a of requested.aliases) mergedAliases.add(a);
 
-    await atomicWrite(target, stringify(meta, parsed.body));
+    if (existingValid.overCap.tags || existingValid.overCap.aliases) {
+      return aliasAddAtCapResult({
+        domain,
+        field: capField(existingValid.overCap.tags, existingValid.overCap.aliases),
+        existingTags,
+        existingAliases,
+        requested
+      });
+    }
+
+    const nextTags = [...mergedTags];
+    const nextAliases = [...mergedAliases];
+    const tagsOverCap = nextTags.length > TAG_CAP;
+    const aliasesOverCap = nextAliases.length > ALIAS_CAP;
+    if (tagsOverCap || aliasesOverCap) {
+      return aliasAddAtCapResult({
+        domain,
+        field: capField(tagsOverCap, aliasesOverCap),
+        existingTags,
+        existingAliases,
+        requested
+      });
+    }
+
+    if (mergedTags.size === beforeTags.size && mergedAliases.size === beforeAls.size) {
+      return {
+        status: "ok",
+        summary: `No routing terms changed for ${domain}.md`,
+        file: target,
+        unchanged: true,
+        sync: { ok: true, skipped: true }
+      };
+    }
+
+    const nextMeta = { ...meta, tags: nextTags, aliases: nextAliases, verified: today() };
+    const v = validateMeta(nextMeta);
+    if (!v.ok) return { status: "invalid_setup", summary: `frontmatter validate (manual repair required): ${v.errors.join("; ")}` };
+
+    await atomicWrite(target, stringify(nextMeta, parsed.body));
     return {
       status: "ok",
-      summary: `Updated ${domain}.md (tags=${meta.tags.length}, aliases=${meta.aliases.length})`,
+      summary: `Updated ${domain}.md (tags=${nextMeta.tags.length}, aliases=${nextMeta.aliases.length})`,
       file: target,
       note: content.trim() ? `context: ${content.trim().slice(0,140)}` : undefined
     };
   });
 
   if (result.status !== "ok") return result;
+  if (result.sync?.skipped) return result;
   const sync = await runPostWriteSync();
   return { ...result, sync };
 }
@@ -361,6 +520,85 @@ function titleCase(s) {
 }
 
 function escapeRegex(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
+
+function normalizeAliasAddRequest(tags, aliases) {
+  const requestedTags = [];
+  const requestedAliases = [];
+  const invalidTags = [];
+  const invalidAliases = [];
+  const tagInputs = Array.isArray(tags) ? tags : [];
+  const aliasInputs = Array.isArray(aliases) ? aliases : [];
+
+  for (const raw of tagInputs) {
+    if (typeof raw !== "string") continue;
+    const tag = raw.trim().toLowerCase();
+    if (!isValidTag(tag)) invalidTags.push(raw);
+    else if (!requestedTags.includes(tag)) requestedTags.push(tag);
+  }
+  for (const raw of aliasInputs) {
+    if (typeof raw !== "string") continue;
+    const alias = raw.trim();
+    if (!isValidAlias(alias)) invalidAliases.push(raw);
+    else if (!requestedAliases.includes(alias)) requestedAliases.push(alias);
+  }
+
+  const errors = [];
+  if (invalidTags.length) errors.push(`invalid tags: ${invalidTags.map(JSON.stringify).join(", ")}`);
+  if (invalidAliases.length) errors.push(`invalid aliases: ${invalidAliases.map(JSON.stringify).join(", ")}`);
+  return {
+    ok: errors.length === 0,
+    errors,
+    invalid: { tags: invalidTags, aliases: invalidAliases },
+    tags: requestedTags,
+    aliases: requestedAliases
+  };
+}
+
+function validateExistingAliasAddMeta(meta) {
+  const v = validateMeta(meta);
+  if (v.ok) return { ok: true, errors: [], overCap: { tags: false, aliases: false } };
+
+  const tagArray = Array.isArray(meta?.tags);
+  const aliasArray = Array.isArray(meta?.aliases);
+  const tagsOverCap = tagArray && meta.tags.length > TAG_CAP;
+  const aliasesOverCap = aliasArray && meta.aliases.length > ALIAS_CAP;
+  const tagEntriesValid = tagArray && meta.tags.length >= 1 && meta.tags.every(isValidTag);
+  const aliasEntriesValid = aliasArray && meta.aliases.every(isValidAlias);
+  const capProbe = {
+    ...meta,
+    tags: tagsOverCap ? meta.tags.slice(0, TAG_CAP) : meta.tags,
+    aliases: aliasesOverCap ? meta.aliases.slice(0, ALIAS_CAP) : meta.aliases
+  };
+
+  if ((tagsOverCap || aliasesOverCap) && tagEntriesValid && aliasEntriesValid && validateMeta(capProbe).ok) {
+    return { ok: true, errors: [], overCap: { tags: tagsOverCap, aliases: aliasesOverCap } };
+  }
+  return { ok: false, errors: v.errors, overCap: { tags: false, aliases: false } };
+}
+
+function aliasAddAtCapResult({ domain, field, existingTags, existingAliases, requested }) {
+  return {
+    status: "at_cap",
+    summary: `alias_add would exceed ${field} cap for ${domain}.md; prioritize existing routing terms before retrying.`,
+    field,
+    cap: { tags: TAG_CAP, aliases: ALIAS_CAP },
+    existing: { tags: [...existingTags], aliases: [...existingAliases] },
+    requested: { tags: [...requested.tags], aliases: [...requested.aliases] }
+  };
+}
+
+function capField(tagsOverCap, aliasesOverCap) {
+  if (tagsOverCap && aliasesOverCap) return "both";
+  return tagsOverCap ? "tags" : "aliases";
+}
+
+function isValidTag(value) {
+  return typeof value === "string" && TAG_RE.test(value);
+}
+
+function isValidAlias(value) {
+  return typeof value === "string" && value.length >= ALIAS_MIN_CHARS && value.length <= ALIAS_MAX_CHARS;
+}
 
 // Optional debug entry for the route tool.
 export async function debugRoute({ intent }) {

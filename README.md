@@ -3,20 +3,21 @@
 A dynamic, organically-growing operational knowledge base implemented as a
 **GHCP CLI extension**. The agent automatically loads relevant lessons before
 each prompt and captures new ones via tool calls. Zero human intervention
-except for ambiguity, contradiction, or Quick Rule demotion at cap.
+except for ambiguity, contradiction, Quick Rule demotion at cap, or accidental
+sensitive-data capture.
 
 ## What this is
 
 A single CLI extension at `~/.copilot/extensions/jit-memory/` that:
 
 - **Routes deterministically** before every prompt via `onUserPromptSubmitted`
-  — matches user intent against tags/aliases of all known domains and injects
-  matched files as hidden context (≤4 KB hard cap). No LLM tag-scanning.
+  — matches user intent against tags/aliases in the generated routing register
+  and injects matched files as hidden context (≤4 KB hard cap). No LLM tag-scanning.
 - **Captures lessons atomically** via the `jit_memory_capture` tool. Five
   kinds: universal Quick Rule, new domain, existing domain update, disputed
-  fact, missing alias. The agent calls this when it sees a repeatable
-  failure or pattern. The user is consulted only for ambiguity, contradiction,
-  or Quick Rule demotion.
+  fact, missing alias. The agent calls this when it sees a lesson that could
+  plausibly recur. The user is consulted only for ambiguity, contradiction,
+  Quick Rule demotion, or accidental sensitive-data capture.
 - **Audits deterministically** via `onSessionStart` (read-only digest surfacing)
   and an optional headless `node audit.mjs` cron entry (write-side: archives
   deprecated >30 d).
@@ -57,6 +58,7 @@ jitmemdist/
     └── knowledge/
         ├── _routing.json              generated cache (router reads)
         ├── _usage.json                telemetry state
+        ├── _jit-memory.log            operational log (rotated at 256 KB)
         ├── _archive/                  retired domain files
         └── protocols/                 multi-step protocol files
 ```
@@ -67,8 +69,8 @@ jitmemdist/
 required `domain`, `kind`, `summary`, `tags`, `aliases`, `see_also`,
 `verified`, `deprecated`. `JSON.parse` is the authoritative validator.
 
-**Single source of truth = the domain files.** `_routing.json`, the KB block
-in instructions, and `_usage.json` are all generated artifacts. Sync is
+**Single source of truth = the domain files.** `_routing.json`, the compact KB
+signpost in instructions, and `_usage.json` are all generated artifacts. Sync is
 single-flight + dirty-flag coalesced — concurrent captures collapse to one
 sync.
 
@@ -82,7 +84,7 @@ edits (a deliberate "this lesson was just confirmed correct" signal).
 - `medium` (tag word-boundary)    → summary + first paragraph (≤600 B)
 - `low` (see-also expansion only) → summary line only
 
-**Privacy: no prompt content is persisted**. Telemetry is `{slug → {hits, lastHit}}`.
+**Privacy and trust.** Usage telemetry persists only `{slug -> {hits, lastHit}}`: no prompt text or captured lesson bodies. Operational events are logged separately to `knowledge/_jit-memory.log`, rotated at 256 KB (previous contents move to `_jit-memory.log.1`; one generation is kept), and may include event names, reason codes, domain slugs, and error messages, but not prompt text or captured lesson bodies. Captured lessons are stored as local plaintext Markdown under `knowledge/` and can be injected into future prompts; redact sensitive data before capture. Treat `knowledge/` like trusted local code, and do not import, sync, or commit it to shared locations without review. If sensitive data is captured accidentally, stop and repair or remove the affected local knowledge file before continuing.
 
 **Cross-platform.** Pure Node ESM. No PowerShell. Tested path:
 `fs.promises.rename` for atomicity, `fs.open(<lock>, "wx")` for advisory
@@ -90,7 +92,7 @@ locking, same-directory temp files, EPERM/EACCES retry for Windows AV.
 
 ## Capture flow (agent's side)
 
-When the agent identifies a repeatable failure or pattern:
+When the agent identifies a lesson that could plausibly recur:
 
 ```js
 jit_memory_capture({
@@ -99,12 +101,14 @@ jit_memory_capture({
   summary: "Outlook COM is the only working email method...",
   tags: ["email", "outlook", "graph-api"],
   aliases: ["send mail", "send an email"],
-  content: "Email: Graph API requires admin consent → use Outlook COM via PowerShell"
+  content: "Email: Graph API requires admin consent -> use Outlook COM via PowerShell"
 });
 ```
 
 The tool atomically writes the file, regenerates the routing cache, and
 returns `{status: "ok"}`. Next prompt that mentions "email" will route to it.
+Tags, aliases, summaries, and see-also metadata stay in `_routing.json`; the
+static instructions block only shows the compact domain/file signpost.
 
 If a Quick Rule capture finds the cap is full:
 

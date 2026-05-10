@@ -4,25 +4,12 @@
 import { promises as fs } from "node:fs";
 import { parse } from "./frontmatter.mjs";
 import { assertRoutableKnowledgeFile } from "./paths.mjs";
+import { utf8ByteLength as utf8len, truncateUtf8 } from "./utf8.mjs";
 
 const BUDGET_BYTES        = 4096;
 const PER_FILE_HIGH_BYTES = 1500;
 const PER_FILE_MED_BYTES  = 600;
 const OVERHEAD_BYTES      = 64;
-
-const enc = new TextEncoder();
-const utf8len = s => enc.encode(s).length;
-
-function truncateUtf8(text, maxBytes) {
-  if (utf8len(text) <= maxBytes) return text;
-  let lo = 0, hi = text.length;
-  while (lo < hi) {
-    const mid = (lo + hi + 1) >> 1;
-    if (utf8len(text.slice(0, mid)) <= maxBytes) lo = mid;
-    else hi = mid - 1;
-  }
-  return text.slice(0, lo);
-}
 
 function strip(body) {
   // Trim leading whitespace; collapse runs of blank lines.
