@@ -3,7 +3,7 @@
 
 import { promises as fs } from "node:fs";
 import { parse } from "./frontmatter.mjs";
-import { assertRoutableKnowledgeFile } from "./paths.mjs";
+import { assertRoutableKnowledgeFileAsync } from "./paths.mjs";
 import { utf8ByteLength as utf8len, truncateUtf8 } from "./utf8.mjs";
 
 const BUDGET_BYTES        = 4096;
@@ -45,7 +45,7 @@ async function buildBlock(match) {
     // Defense-in-depth: even though the router already validates these
     // paths, re-assert before any filesystem read so a corrupted match
     // object passed in directly cannot escape KNOWLEDGE_ROOT.
-    const safePath = assertRoutableKnowledgeFile(match.file);
+    const safePath = await assertRoutableKnowledgeFileAsync(match.file);
     const raw = await fs.readFile(safePath, "utf8");
     const { body } = parse(raw);
     const cleanBody = xmlEscape(strip(body));

@@ -17,15 +17,17 @@ For user "remember/save/capture/note" requests, translate the request into `jit_
 
 ### Quick Rules — managed by jit_memory_capture
 
+<!-- jit-memory managed: do not hand-edit between QR:BEGIN and QR:END -->
 <!-- QR:BEGIN -->
 <!-- QR:END -->
 
 ### Domain Index
 
+<!-- jit-memory managed: do not hand-edit between KB:BEGIN and KB:END -->
 <!-- KB:BEGIN -->
 
-| Domain             | File |
-| ------------------ | ---- |
-| _(no domains yet)_ |      |
+| Domain | File |
+|---|---|
+| _(no domains yet)_ | |
 
 <!-- KB:END -->

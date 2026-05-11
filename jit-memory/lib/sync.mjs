@@ -9,6 +9,7 @@ import { parse, validateMeta } from "./frontmatter.mjs";
 import { invalidateRoutingCache } from "./router.mjs";
 import { registerTestHooks } from "./test-hook-registry.mjs";
 import { pruneUsageDomains, usageDomainsForFile } from "./usage.mjs";
+import { logEvent } from "./jitlog.mjs";
 
 export const KB_BEGIN = "<!-- KB:BEGIN -->";
 export const KB_END   = "<!-- KB:END -->";
@@ -23,6 +24,8 @@ let timer    = null;
 let inFlight = null;
 let dirty    = false;
 let syncOnceImpl = _syncOnceReal;
+let readRoutingFileImpl = path => fs.readFile(path, "utf8");
+let lastRoutingReadFailureSignature = null;
 
 export function requestSync(opts = {}) {
   // Fire-and-forget. Used by hooks. Errors swallowed at boundary.
@@ -122,15 +125,22 @@ function resetSchedulerForTestHook() {
   inFlight = null;
   dirty = false;
   syncOnceImpl = _syncOnceReal;
+  readRoutingFileImpl = path => fs.readFile(path, "utf8");
+  lastRoutingReadFailureSignature = null;
 }
 
 function setSyncOnceForTestHook(fn) {
   syncOnceImpl = typeof fn === "function" ? fn : _syncOnceReal;
 }
 
+function setRoutingReadFileForTestHook(fn) {
+  readRoutingFileImpl = typeof fn === "function" ? fn : (path => fs.readFile(path, "utf8"));
+}
+
 registerTestHooks("sync", {
   resetScheduler: resetSchedulerForTestHook,
-  setSyncOnce: setSyncOnceForTestHook
+  setSyncOnce: setSyncOnceForTestHook,
+  setRoutingReadFile: setRoutingReadFileForTestHook
 });
 
 // ── one sync pass ───────────────────────────────────────────────────────────
@@ -163,6 +173,38 @@ export function kbBlockEquivalent(a, b) {
     .join("\n")
     .trim();
   return strip(a) === strip(b);
+}
+
+async function readExistingRoutingTable() {
+  let raw;
+  try {
+    raw = await readRoutingFileImpl(ROUTING_JSON);
+  } catch (e) {
+    if (e.code === "ENOENT") {
+      lastRoutingReadFailureSignature = null;
+      return { ok: true, canWrite: true, table: null };
+    }
+    const signature = `${e.code || "ERROR"}:${e.message || e}`;
+    if (signature !== lastRoutingReadFailureSignature) {
+      lastRoutingReadFailureSignature = signature;
+      await logEvent("routing_read_failed", {
+        code: e.code,
+        path: ROUTING_JSON,
+        error: e?.message || String(e)
+      });
+    }
+    return { ok: false, canWrite: false, table: null, error: e };
+  }
+
+  try {
+    const table = JSON.parse(raw);
+    lastRoutingReadFailureSignature = null;
+    return { ok: true, canWrite: true, table };
+  } catch (e) {
+    lastRoutingReadFailureSignature = null;
+    await logEvent("routing_corrupt_overwrite", { error: e?.message || String(e) });
+    return { ok: true, canWrite: true, table: null };
+  }
 }
 
 async function _syncOnceReal() {
@@ -209,18 +251,18 @@ async function _syncOnceUnlocked() {
   // timestamp would otherwise force a write on every sync pass and cause
   // session-start auto-heal to thrash mtimes.
   let routingWritten = false;
-  let existingTable  = null;
-  try {
-    const raw = await fs.readFile(ROUTING_JSON, "utf8");
-    existingTable = JSON.parse(raw);
-  } catch (e) { /* missing or corrupted -> we'll write */ }
+  let routingReadSkipped = false;
+  const existingRouting = await readExistingRoutingTable();
+  const existingTable = existingRouting.table;
 
   const newDomainsJson = JSON.stringify({ version: 3, domains: entries });
   const oldDomainsJson = existingTable
     ? JSON.stringify({ version: existingTable.version, domains: existingTable.domains || [] })
     : null;
 
-  if (oldDomainsJson !== newDomainsJson) {
+  if (!existingRouting.canWrite) {
+    routingReadSkipped = true;
+  } else if (oldDomainsJson !== newDomainsJson) {
     const table = {
       version:   3,
       generated: new Date().toISOString(),
@@ -257,6 +299,7 @@ async function _syncOnceUnlocked() {
     validationErrors: errors,
     kbStatus,
     routingWritten,
+    routingReadSkipped,
     usagePrunedCount: usagePrune.prunedCount,
     usagePrunedDomains: usagePrune.prunedDomains
   };

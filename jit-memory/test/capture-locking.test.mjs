@@ -150,7 +150,7 @@ test("concurrent domain_new for same slug: exactly one wins (deterministic via p
         domain: "racecondition",
         summary: `attempt ${i}`,
         content: `attempt ${i} body`,
-        tags: ["x"]
+        tags: ["xx"]
       })
     )
   );

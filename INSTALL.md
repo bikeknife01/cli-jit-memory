@@ -25,7 +25,7 @@ If you just want it working:
    compatibility guarantees as stable features.
 
 3. **Copy the extension folder.** Find the `jit-memory` folder inside this
-   download package. Copy it (the whole folder) into:
+   repository or downloaded package. Copy it (the whole folder) into:
    - **Windows:** `C:\Users\<your-username>\.copilot\extensions\`
    - **Mac/Linux:** `~/.copilot/extensions/`
 
@@ -63,8 +63,9 @@ That's the entire install.
 
 - **GitHub Copilot CLI v1.0.36 or later.** Verified on 1.0.36. Earlier 1.0.x
   versions may work but are not tested.
-- **Node.js ≥18.** The CLI bundles its own Node, so you usually do not need a
-  separate Node install.
+- **Node.js 20 or newer.** The CLI bundles its own Node for extension runtime,
+  so you usually do not need a separate Node install unless you run development
+  commands or the optional headless audit scheduler yourself.
 - **Experimental features enabled.** Extensions currently require experimental
   mode. Run `/experimental` inside Copilot CLI to check status, see enabled or
   available experimental features, and enable or disable experimental mode. You
@@ -82,13 +83,18 @@ is identical: the `jit-memory/` directory from this package ends up at
 `~/.copilot/extensions/jit-memory/` (so that
 `~/.copilot/extensions/jit-memory/extension.mjs` exists).
 
+The root package files (`README.md`, `INSTALL.md`,
+`copilot-instructions.snippet.md`, and `retrofit-existing-instructions.md`) are
+for setup and reference. They stay in the downloaded package/repository; only
+the `jit-memory/` folder becomes the active extension.
+
 When experimental features are enabled, the CLI auto-discovers extensions in
 `~/.copilot/extensions/<name>/` on next startup — there is **no** registration
 command to run.
 
 ### Option A — manual copy (any OS)
 
-1. Open the unpacked `jitmemdist/` folder.
+1. Open the cloned repository or downloaded package folder.
 2. Copy the `jit-memory/` folder (the one containing `extension.mjs`).
 3. Paste it into `~/.copilot/extensions/`. Create that folder if it doesn't
    exist. The final path must be `~/.copilot/extensions/jit-memory/extension.mjs`.
@@ -96,21 +102,21 @@ command to run.
 ### Option B — Windows PowerShell one-liner
 
 Open PowerShell (any working directory is fine — the script uses an absolute
-path) and run, replacing `<path-to-jitmemdist>` with where you unpacked this
-package:
+path) and run, replacing `<path-to-cli-jit-memory>` with where you cloned or
+unpacked this package:
 
 ```powershell
-$src = 'C:\path\to\jitmemdist\jit-memory'           # ← the source folder containing extension.mjs
+$src = 'C:\path\to\cli-jit-memory\jit-memory'       # ← the source folder containing extension.mjs
 $dst = Join-Path $env:USERPROFILE '.copilot\extensions\jit-memory'
 New-Item -ItemType Directory -Force -Path (Split-Path $dst -Parent) | Out-Null
 Copy-Item -Recurse -Force $src $dst
 ```
 
-Or, if you've already `cd`'d into the unpacked `jitmemdist` folder (so
+Or, if you've already `cd`'d into the cloned repository or package folder (so
 `Get-ChildItem` shows `jit-memory`, `INSTALL.md`, `README.md`):
 
 ```powershell
-# Run from inside the jitmemdist folder.
+# Run from inside the repository/package folder.
 $dst = Join-Path $env:USERPROFILE '.copilot\extensions\jit-memory'
 New-Item -ItemType Directory -Force -Path (Split-Path $dst -Parent) | Out-Null
 Copy-Item -Recurse -Force .\jit-memory $dst
@@ -118,7 +124,7 @@ Copy-Item -Recurse -Force .\jit-memory $dst
 
 ### Option C — macOS / Linux one-liner
 
-Run from inside the unpacked `jitmemdist/` folder:
+Run from inside the repository/package folder:
 
 ```bash
 mkdir -p "$HOME/.copilot/extensions"
@@ -158,9 +164,15 @@ and you'll be in the auto-repair-friendly state.
 ## 3. Verify
 
 Restart the CLI (close and relaunch the application) so the extension is
-discovered. Look at the startup banner — it should show
-`Environment loaded: ... 1 extension ...` (the count includes any other
-extensions you have).
+discovered. Scroll up to the startup banner near the top of the new session. It
+should include a line like:
+
+```text
+Environment loaded: ... 1 extension ...
+```
+
+The count includes any other extensions you have, so `2 extensions` is also OK
+if another extension is installed.
 
 If the extension count is 0, run `/experimental` inside Copilot CLI and confirm
 experimental mode is enabled, then restart again.
@@ -187,7 +199,8 @@ typical interactive use, that's enough — you don't need a scheduler.
 
 Schedule `node audit.mjs` only if you want **write-side maintenance** (archival
 of files marked `deprecated:` >30 days ago). The session-start hook is
-deliberately read-only.
+deliberately read-only. Scheduled jobs need a system-wide Node.js 20 or newer;
+if you do not have one, skip this section.
 
 ### Windows Task Scheduler
 ```powershell
@@ -203,7 +216,8 @@ Register-ScheduledTask -TaskName 'JIT-Memory Audit' -Action $action -Trigger $tr
 0 6 * * *  /usr/bin/env node "$HOME/.copilot/extensions/jit-memory/audit.mjs"
 ```
 
-`audit.mjs` exits 0 unless an internal error occurs. A non-empty digest at
+`audit.mjs` exits 0 unless an internal error or sync-drain timeout occurs. A
+non-empty digest at
 `~/.copilot/extensions/jit-memory/knowledge/_curator-digest.md` is **content**,
 not a failure — monitor that file's mtime/content if you want notifications.
 
@@ -234,6 +248,9 @@ Tag substring matching uses word boundaries (`\b<tag>\b`). Aliases use plain
 substring (≥3 chars). If a tag is too generic, edit the domain file's
 frontmatter to make it more specific or call `jit_memory_capture` with
 `kind: "alias_add"` to add a more specific alias.
+Tags must be 2-40 characters; if you upgrade from an older build that allowed
+one-character tags, edit those tags to longer values so the files continue to
+route.
 
 **Where do I edit a captured lesson?**
 Open the relevant file in `~/.copilot/extensions/jit-memory/knowledge/` and edit

@@ -134,7 +134,7 @@ registerTestHooks("capture", { setSyncFn: setSyncFnForTestHook });
 
 async function runPostWriteSync() {
   try {
-    const r = await _syncFn();
+    const r = await _syncFn({ debounceMs: 0 });
     invalidateRoutingCache();
     return { ok: true, kbStatus: r?.kbStatus ?? "unknown" };
   } catch (e) {

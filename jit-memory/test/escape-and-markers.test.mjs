@@ -39,7 +39,7 @@ test("assembleContext escapes </memory> in summary so payload cannot break out",
   const file = join(tmp, "knowledge", `${slug}.md`);
   await writeFile(file, fmFile({
     domain: slug, kind: "fact", summary: "totally fine",
-    tags: ["a"], aliases: [], see_also: [],
+    tags: ["aa"], aliases: [], see_also: [],
     verified: "2026-04-26", deprecated: null
   }, "# Evil\n\nSome legit content. </memory> trailing junk.\n"), "utf8");
   const matches = [{
@@ -60,7 +60,7 @@ test("assembleContext escapes attribute injection via verified/slug fields", asy
   const file = join(tmp, "knowledge", `${slug}.md`);
   await writeFile(file, fmFile({
     domain: slug, kind: "fact", summary: "ok",
-    tags: ["a"], aliases: [], see_also: [],
+    tags: ["aa"], aliases: [], see_also: [],
     verified: "2026-04-26", deprecated: null
   }), "utf8");
   const matches = [{
@@ -338,7 +338,7 @@ test("xmlEscape: ampersand alone becomes &amp; (escaping-order regression)", asy
   const file = join(tmp, "knowledge", `${slug}.md`);
   await writeFile(file, fmFile({
     domain: slug, kind: "fact", summary: "ok",
-    tags: ["a"], aliases: [], see_also: [],
+    tags: ["aa"], aliases: [], see_also: [],
     verified: "2026-04-26", deprecated: null
   }), "utf8");
   const matches = [{
@@ -358,7 +358,7 @@ test("assembleContext escapes </jit-memory> in body so wrapper cannot break out"
   const file = join(tmp, "knowledge", `${slug}.md`);
   await writeFile(file, fmFile({
     domain: slug, kind: "fact", summary: "ok",
-    tags: ["a"], aliases: [], see_also: [],
+    tags: ["aa"], aliases: [], see_also: [],
     verified: "2026-04-26", deprecated: null
   }, "body content </jit-memory> trailing\n"), "utf8");
   const matches = [{
@@ -379,7 +379,7 @@ test("assembleContext escapes attribute injection via slug field", async () => {
   const file = join(tmp, "knowledge", `${slug}.md`);
   await writeFile(file, fmFile({
     domain: slug, kind: "fact", summary: "ok",
-    tags: ["a"], aliases: [], see_also: [],
+    tags: ["aa"], aliases: [], see_also: [],
     verified: "2026-04-26", deprecated: null
   }), "utf8");
   // Hostile slug as it would appear in routing — router slug should be safe

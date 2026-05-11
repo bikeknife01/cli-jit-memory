@@ -37,8 +37,8 @@ function frontmatter(domain, opts = {}) {
   return `---\n${JSON.stringify(meta, null, 2)}\n---\n\n# ${domain}\n\nbody\n`;
 }
 
-await writeFile(join(KNOW, "alpha.md"), frontmatter("alpha", { tags: ["a"] }), "utf8");
-await writeFile(join(KNOW, "beta.md"),  frontmatter("beta",  { tags: ["b"] }), "utf8");
+await writeFile(join(KNOW, "alpha.md"), frontmatter("alpha", { tags: ["aa"] }), "utf8");
+await writeFile(join(KNOW, "beta.md"),  frontmatter("beta",  { tags: ["bb"] }), "utf8");
 
 const { syncNow } = await import("../lib/sync.mjs");
 const { detectDrift } = await import("../lib/drift.mjs");
@@ -155,7 +155,7 @@ test("detectDrift: file removed (renamed to hidden) triggers heal", async () => 
 });
 
 test("detectDrift: new file triggers file_added", async () => {
-  await writeFile(join(KNOW, "gamma.md"), frontmatter("gamma", { tags: ["g"] }), "utf8");
+  await writeFile(join(KNOW, "gamma.md"), frontmatter("gamma", { tags: ["gg"] }), "utf8");
   try {
     const drift = await detectDrift();
     assert.equal(drift.drifted, true);

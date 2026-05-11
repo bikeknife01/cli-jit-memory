@@ -95,6 +95,21 @@ test("ensureMarkers inserts only QR subsection when OKB heading already exists",
   );
 });
 
+test("ensureMarkers does not duplicate OKB heading with case or whitespace variation", async () => {
+  await withInstructions(
+    "# header\n\n## operational knowledge base (jit-memory)   \n\n### Domain Index\n\n<!-- KB:BEGIN -->\n<!-- KB:END -->\n",
+    async () => {
+      const r = await ensureMarkers();
+      assert.equal(r.qrInserted, true);
+      assert.equal(r.kbInserted, false);
+      const after = await readFile(INSTR, "utf8");
+      assert.equal((after.match(/^#{1,6}\s+operational knowledge base \(jit-memory\)\s*$/gim) || []).length, 1);
+      assert.match(after, /### Quick Rules — managed by jit_memory_capture/);
+      assert.equal((after.match(/<!-- KB:BEGIN -->/g) || []).length, 1);
+    }
+  );
+});
+
 // ── ensureMarkers: only KB missing ──────────────────────────────────────────
 
 test("ensureMarkers inserts only KB when only KB missing", async () => {
@@ -148,8 +163,26 @@ test("ensureMarkers inserts both when both missing", async () => {
       assert.match(after, /<!-- QR:END -->/);
       assert.match(after, /<!-- KB:BEGIN -->/);
       assert.match(after, /<!-- KB:END -->/);
+      assert.match(after, /<!-- QR:END -->\n\n### Domain Index/);
       // Original content preserved at top.
       assert.ok(after.startsWith("# user instructions\n"), "original prefix preserved");
+    }
+  );
+});
+
+test("ensureMarkers inserts both marker sections under an edited OKB heading", async () => {
+  await withInstructions(
+    "# header\n\n# Operational Knowledge Base (jit-memory)   \n\nExisting notes.\n",
+    async () => {
+      const r = await ensureMarkers();
+      assert.equal(r.qrInserted, true);
+      assert.equal(r.kbInserted, true);
+      const after = await readFile(INSTR, "utf8");
+      assert.equal((after.match(/^#{1,6}\s+Operational Knowledge Base \(jit-memory\)\s*$/gim) || []).length, 1);
+      assert.match(after, /### Quick Rules — managed by jit_memory_capture/);
+      assert.match(after, /### Domain Index/);
+      assert.match(after, /<!-- QR:BEGIN -->/);
+      assert.match(after, /<!-- KB:BEGIN -->/);
     }
   );
 });
@@ -271,6 +304,14 @@ test("extension.mjs registers hooks/tools via joinSession options", async () => 
   assert.match(src, /gateOnMarkers\s*\(/);
   // Fire-and-forget bootstrap must have a terminal .catch().
   assert.match(src, /ensureMarkers\(\)[\s\S]*?\.catch\s*\(/);
+  // Startup diagnostics must not silently drop warnings before joinSession
+  // binds a session logger, and initialization failure should be actionable.
+  assert.match(src, /const\s+PRE_SESSION_WARN_LIMIT\s*=/);
+  assert.match(src, /function\s+makePreSessionWarnBuffer\s*\(/);
+  assert.match(src, /let\s+warn\s*=\s*preSessionWarn\.warn/);
+  assert.match(src, /try\s*\{\s*session\s*=\s*await\s+joinSession\(\s*\{\s*hooks\s*,\s*tools\s*\}\s*\)/);
+  assert.match(src, /process\.stderr\.write\(`jit-memory: failed to initialize extension session:/);
+  assert.match(src, /preSessionWarn\.flush\(session\)/);
 });
 
 // ── casReplaceMarkers fail-closed on malformed (writer-side defense) ────────

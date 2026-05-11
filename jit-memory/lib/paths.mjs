@@ -147,7 +147,7 @@ export function assertNoKnowledgeSymlinkSync(absPath) {
 // (deprecated entries should never be routed).
 //
 // Returns the normalized path on success; throws on rejection.
-export function assertRoutableKnowledgeFile(absPath) {
+function assertRoutablePathShape(absPath) {
   const norm = assertUnderKnowledge(absPath);
   if (!norm.toLowerCase().endsWith(".md")) {
     throw new Error(`not a markdown file: ${absPath}`);
@@ -160,6 +160,17 @@ export function assertRoutableKnowledgeFile(absPath) {
   if (norm.toLowerCase().startsWith(archivePrefix)) {
     throw new Error(`refusing to route archived file: ${absPath}`);
   }
+  return norm;
+}
+
+export async function assertRoutableKnowledgeFileAsync(absPath) {
+  const norm = assertRoutablePathShape(absPath);
+  await assertNoKnowledgeSymlink(norm);
+  return norm;
+}
+
+export function assertRoutableKnowledgeFile(absPath) {
+  const norm = assertRoutablePathShape(absPath);
   assertNoKnowledgeSymlinkSync(norm);
   return norm;
 }

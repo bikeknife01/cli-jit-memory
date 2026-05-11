@@ -18,8 +18,8 @@ await mkdir(join(tmp, "knowledge", "_archive"), { recursive: true });
 
 const { route, loadRouting, consumeInvalidEntryCount } = await import("../lib/router.mjs");
 const { UsageTracker, pruneUsageDomains } = await import("../lib/usage.mjs");
-const { assertRoutableKnowledgeFile, ROUTING_JSON } = await import("../lib/paths.mjs");
-const { resetRouterInvalidEntryCount } = await import("./support/test-hooks.mjs");
+const { assertRoutableKnowledgeFile, assertRoutableKnowledgeFileAsync, ROUTING_JSON } = await import("../lib/paths.mjs");
+const { resetRouterInvalidEntryCount, resetSyncScheduler, setRoutingReadFile } = await import("./support/test-hooks.mjs");
 const paths = await import("../lib/paths.mjs");
 
 function domainFile(domain, opts = {}) {
@@ -77,12 +77,57 @@ test("route() drops _archive/ entries even if .md", () => {
   assert.ok(!slugs.includes("archived"), "archived entries must not be routed");
 });
 
+test("route() skips single-character tags rejected by frontmatter", () => {
+  const table = {
+    version: 3,
+    domains: [
+      { domain: "single", file_rel: "single.md", tags: ["x"], summary: "" }
+    ]
+  };
+  assert.deepEqual(route("use x flag", table).map(m => m.slug), []);
+  assert.deepEqual(route("use xray flag", table).map(m => m.slug), []);
+});
+
+test("frontmatter validation rejects single-character tags", async () => {
+  const { validateMeta } = await import("../lib/frontmatter.mjs");
+  const valid = validateMeta({
+    domain: "tagcheck",
+    kind: "fact",
+    summary: "tag check",
+    tags: ["x"],
+    aliases: [],
+    see_also: [],
+    verified: "2026-05-09",
+    deprecated: null
+  });
+  assert.equal(valid.ok, false);
+  assert.ok(valid.errors.some(e => e.includes("2–40 chars")));
+});
+
 test("assertRoutableKnowledgeFile rejects directly", () => {
   assert.throws(() => assertRoutableKnowledgeFile(join(tmp, "knowledge", "../escape.md")));
   assert.throws(() => assertRoutableKnowledgeFile(join(tmp, "knowledge", "doc.txt")));
   assert.throws(() => assertRoutableKnowledgeFile(join(tmp, "knowledge", "_archive", "old.md")));
   // sanity: a normal path passes
   assert.doesNotThrow(() => assertRoutableKnowledgeFile(join(tmp, "knowledge", "ok.md")));
+});
+
+test("sync and async routable validators agree on path-shape decisions", async () => {
+  const cases = [
+    { path: join(tmp, "knowledge", "ok.md"), ok: true },
+    { path: join(tmp, "knowledge", "../escape.md"), ok: false },
+    { path: join(tmp, "knowledge", "doc.txt"), ok: false },
+    { path: join(tmp, "knowledge", "_archive", "old.md"), ok: false }
+  ];
+
+  for (const c of cases) {
+    if (c.ok) {
+      assert.equal(assertRoutableKnowledgeFile(c.path), await assertRoutableKnowledgeFileAsync(c.path));
+    } else {
+      assert.throws(() => assertRoutableKnowledgeFile(c.path));
+      await assert.rejects(() => assertRoutableKnowledgeFileAsync(c.path));
+    }
+  }
 });
 
 // ── usage counting ─────────────────────────────────────────────────────────
@@ -430,6 +475,91 @@ test("syncNow prunes removed usage but preserves invalid-frontmatter filename fa
   await rm(join(tmp, "knowledge", "fallbackkeep.md"), { force: true });
 });
 
+test("syncNow logs when corrupted routing JSON is overwritten", async () => {
+  const { syncNow } = await import("../lib/sync.mjs");
+  const { _LOG_PATH_FOR_TESTS } = await import("../lib/jitlog.mjs");
+  resetSyncScheduler();
+  await rm(_LOG_PATH_FOR_TESTS, { force: true });
+  await writeFile(join(tmp, "knowledge", "corruptlog.md"), domainFile("corruptlog"), "utf8");
+  await writeFile(paths.ROUTING_JSON, "{ not json", "utf8");
+  try {
+    const r = await syncNow({ debounceMs: 0 });
+    assert.equal(r.routingWritten, true);
+    const log = await readFile(_LOG_PATH_FOR_TESTS, "utf8");
+    assert.match(log, /routing_corrupt_overwrite/);
+    assert.match(log, /Unexpected token|Expected property name|JSON/);
+  } finally {
+    await rm(join(tmp, "knowledge", "corruptlog.md"), { force: true });
+    await rm(_LOG_PATH_FOR_TESTS, { force: true });
+  }
+});
+
+test("syncNow logs routing read failures without overwriting routing", async () => {
+  const { syncNow } = await import("../lib/sync.mjs");
+  const { _LOG_PATH_FOR_TESTS } = await import("../lib/jitlog.mjs");
+  resetSyncScheduler();
+  await rm(_LOG_PATH_FOR_TESTS, { force: true });
+  const original = JSON.stringify({
+    version: 3,
+    generated: "2026-05-09T00:00:00.000Z",
+    domains: []
+  }, null, 2);
+  await writeFile(paths.ROUTING_JSON, original, "utf8");
+  await writeFile(join(tmp, "knowledge", "readfail.md"), domainFile("readfail"), "utf8");
+
+  try {
+    setRoutingReadFile(async () => {
+      const e = new Error("simulated permission problem");
+      e.code = "EACCES";
+      throw e;
+    });
+
+    const first = await syncNow({ debounceMs: 0 });
+    assert.equal(first.routingWritten, false);
+    assert.equal(first.routingReadSkipped, true);
+    assert.equal(await readFile(paths.ROUTING_JSON, "utf8"), original);
+
+    const second = await syncNow({ debounceMs: 0 });
+    assert.equal(second.routingReadSkipped, true);
+    const log = await readFile(_LOG_PATH_FOR_TESTS, "utf8");
+    assert.equal((log.match(/routing_read_failed/g) || []).length, 1, "same read failure is deduped");
+    assert.match(log, /code="EACCES"/);
+    assert.match(log, /simulated permission problem/);
+  } finally {
+    setRoutingReadFile(null);
+    resetSyncScheduler();
+    await rm(join(tmp, "knowledge", "readfail.md"), { force: true });
+    await rm(_LOG_PATH_FOR_TESTS, { force: true });
+  }
+});
+
+test("syncNow recovers routing writes after transient routing read failure", async () => {
+  const { syncNow } = await import("../lib/sync.mjs");
+  resetSyncScheduler();
+  await writeFile(paths.ROUTING_JSON, JSON.stringify({ version: 3, domains: [] }, null, 2), "utf8");
+  await writeFile(join(tmp, "knowledge", "recoverroute.md"), domainFile("recoverroute"), "utf8");
+  try {
+    setRoutingReadFile(async () => {
+      const e = new Error("temporary sharing violation");
+      e.code = "EPERM";
+      throw e;
+    });
+    const failed = await syncNow({ debounceMs: 0 });
+    assert.equal(failed.routingReadSkipped, true);
+
+    setRoutingReadFile(null);
+    resetSyncScheduler();
+    const recovered = await syncNow({ debounceMs: 0 });
+    assert.equal(recovered.routingWritten, true);
+    const routing = JSON.parse(await readFile(paths.ROUTING_JSON, "utf8"));
+    assert.ok(routing.domains.some(d => d.domain === "recoverroute"));
+  } finally {
+    setRoutingReadFile(null);
+    resetSyncScheduler();
+    await rm(join(tmp, "knowledge", "recoverroute.md"), { force: true });
+  }
+});
+
 test("audit prunes stale usage as maintenance without creating a digest", async () => {
   const { audit } = await import("../lib/audit.mjs");
   await writeFile(join(tmp, "knowledge", "auditactive.md"), domainFile("auditactive"), "utf8");
@@ -452,6 +582,8 @@ test("audit prunes stale usage as maintenance without creating a digest", async 
 
 test("audit archival prunes usage for archived domains via sync", async () => {
   const { audit } = await import("../lib/audit.mjs");
+  const { drainSync } = await import("../lib/sync.mjs");
+  resetSyncScheduler();
   await writeFile(join(tmp, "knowledge", "archiveusage.md"), domainFile("archiveusage", { deprecated: "2026-01-01" }), "utf8");
   await writeFile(paths.USAGE_JSON, JSON.stringify({
     version: 1,
@@ -466,4 +598,8 @@ test("audit archival prunes usage for archived domains via sync", async () => {
   assert.ok(r.maintenance.usagePruned.prunedDomains.includes("archiveusage"));
   const usage = JSON.parse(await readFile(paths.USAGE_JSON, "utf8"));
   assert.equal(usage.domains.archiveusage, undefined);
+  const routing = JSON.parse(await readFile(paths.ROUTING_JSON, "utf8"));
+  assert.equal(routing.domains.some(d => d.domain === "archiveusage"), false);
+  const drain = await drainSync();
+  assert.equal(drain.stalled, false);
 });

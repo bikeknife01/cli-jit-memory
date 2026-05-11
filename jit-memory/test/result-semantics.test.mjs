@@ -45,6 +45,27 @@ test("domain_new returns status=ok with sync.ok=true on success", async () => {
   assert.equal(r.sync.ok, true, "sync should succeed");
 });
 
+test("post-write capture sync requests immediate sync", async () => {
+  let syncOpts;
+  setCaptureSyncFn(async (opts = {}) => {
+    syncOpts = opts;
+    return { kbStatus: "ok" };
+  });
+  try {
+    const r = await capture({
+      kind: "domain_new",
+      domain: "immediatesync",
+      content: "sync without debounce",
+      summary: "immediate sync",
+      tags: ["immediatesync"]
+    });
+    assert.equal(r.status, "ok");
+    assert.deepEqual(syncOpts, { debounceMs: 0 });
+  } finally {
+    setCaptureSyncFn(null);
+  }
+});
+
 test("domain_new succeeds and reports skipped_instructions_missing when instructions are absent", async () => {
   await rm(process.env.JITMEM_INSTRUCTIONS_MD, { force: true });
   const r = await capture({
@@ -374,7 +395,7 @@ test("conflict (file already exists) returns status=conflict and NO sync ran", a
   const file = join(tmp, "knowledge", "conflict-target.md");
   await writeFile(file, fmFile({
     domain: "conflict-target", kind: "fact", summary: "pre",
-    tags: ["c"], aliases: [], see_also: [],
+    tags: ["cc"], aliases: [], see_also: [],
     verified: "2026-04-26", deprecated: null
   }), "utf8");
 
@@ -383,7 +404,7 @@ test("conflict (file already exists) returns status=conflict and NO sync ran", a
     domain: "conflict-target",
     content: "duplicate attempt",
     summary: "dup",
-    tags: ["d"]
+    tags: ["dd"]
   });
   assert.equal(r.status, "conflict");
   assert.equal(r.sync, undefined, "sync should not run on conflict");
@@ -395,7 +416,7 @@ test("invalid input returns status=invalid and NO sync ran", async () => {
     domain: "bad slug with spaces",
     content: "x",
     summary: "x",
-    tags: ["t"]
+    tags: ["tt"]
   });
   assert.equal(r.status, "invalid");
   assert.equal(r.sync, undefined);
@@ -406,7 +427,7 @@ test("domain_update with sync failure: status=ok, sync.ok=false, file persists",
   const file = join(tmp, "knowledge", "updatesync.md");
   await writeFile(file, fmFile({
     domain: "updatesync", kind: "fact", summary: "ok",
-    tags: ["u"], aliases: [], see_also: [],
+    tags: ["uu"], aliases: [], see_also: [],
     verified: "2026-04-26", deprecated: null
   }, "# Updatesync\n\n## ✅ Working\n\n- existing line\n"), "utf8");
 

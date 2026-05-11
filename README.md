@@ -35,7 +35,7 @@ hook, routing becomes invisible infrastructure: the orchestration text in
 ## Package contents
 
 ```
-jitmemdist/
+cli-jit-memory/
 ├── README.md                          (this file — design rationale)
 ├── INSTALL.md                         step-by-step install
 ├── copilot-instructions.snippet.md    paste-into-instructions block (~15 lines)
@@ -56,9 +56,9 @@ jitmemdist/
     │   ├── capture.mjs                5-kind capture state machine
     │   └── audit.mjs                  deterministic audit + digest renderer
     └── knowledge/
-        ├── _routing.json              generated cache (router reads)
-        ├── _usage.json                telemetry state
-        ├── _jit-memory.log            operational log (rotated at 256 KB)
+        ├── _routing.json              seed/generated cache (router reads)
+        ├── _usage.json                seed/generated telemetry state
+        ├── _jit-memory.log            local operational log (created at runtime)
         ├── _archive/                  retired domain files
         └── protocols/                 multi-step protocol files
 ```
@@ -68,6 +68,8 @@ jitmemdist/
 **Frontmatter is JSON, not YAML.** Eliminates parser footguns. Strict subset:
 required `domain`, `kind`, `summary`, `tags`, `aliases`, `see_also`,
 `verified`, `deprecated`. `JSON.parse` is the authoritative validator.
+Tags must be 2-40 characters; upgrade any older one-character tags before
+expecting those files to route.
 
 **Single source of truth = the domain files.** `_routing.json`, the compact KB
 signpost in instructions, and `_usage.json` are all generated artifacts. Sync is
@@ -125,8 +127,9 @@ user if no clear demotion target exists.
   `joinSession({ hooks, tools })` from `@github/copilot-sdk/extension`, which
   is verified on 1.0.36. Earlier 1.0.x versions may work but are not tested.
   Run `copilot --version` to check.
-- **Node.js ≥18.** Required for native `fs.promises`, `node:test`, and ESM
-  module syntax.
+- **Node.js 20 or newer.** Required for the package test script, optional
+  headless audit scheduler, native `fs.promises`, `node:test`, and ESM module
+  syntax.
 - **Experimental features enabled.** As of the current Copilot CLI version,
   extensions are available only when experimental features are turned on.
   Check status, enabled features, and available features from inside Copilot CLI

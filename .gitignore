@@ -1,0 +1,10 @@
+# jit-memory runtime artifacts
+jit-memory/knowledge/_jit-memory.log
+jit-memory/knowledge/_jit-memory.log.1
+jit-memory/knowledge/_curator-digest.md
+jit-memory/knowledge/*.lock
+jit-memory/knowledge/.tmp-*
+
+# Keep seed/generated JSON state intentionally tracked.
+!jit-memory/knowledge/_routing.json
+!jit-memory/knowledge/_usage.json

@@ -23,6 +23,9 @@ import { classifyMarkerPair } from "./markers.mjs";
 const OKB_HEADING = "## Operational Knowledge Base (jit-memory)";
 const QR_HEADING = "### Quick Rules — managed by jit_memory_capture";
 const KB_HEADING = "### Domain Index";
+const OKB_HEADING_RE = /^#{1,6}\s+Operational Knowledge Base \(jit-memory\)\s*$/im;
+const QR_HEADING_RE = /^#{1,6}\s+Quick Rules\b.*jit_memory_capture\s*$/im;
+const KB_HEADING_RE = /^#{1,6}\s+Domain Index\s*$/im;
 
 const QR_SECTION = [
   QR_HEADING,
@@ -43,20 +46,24 @@ const KB_SECTION = [
   ""
 ].join("\n");
 
-function partialStub(content, section) {
-  if (new RegExp(`^${OKB_HEADING.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*$`, "m").test(content)) {
-    return ["", section].join("\n");
-  }
-  return ["", OKB_HEADING, "", section].join("\n");
+function hasJitMemoryHeading(content) {
+  return OKB_HEADING_RE.test(content) || QR_HEADING_RE.test(content) || KB_HEADING_RE.test(content);
 }
 
-const COMBINED_STUB = [
-  "",
-  OKB_HEADING,
-  "",
-  QR_SECTION,
-  KB_SECTION
-].join("\n");
+function stubWithOptionalHeading(content, sections) {
+  if (hasJitMemoryHeading(content)) {
+    return ["", sections].join("\n");
+  }
+  return ["", OKB_HEADING, "", sections].join("\n");
+}
+
+function partialStub(content, section) {
+  return stubWithOptionalHeading(content, section);
+}
+
+function combinedStub(content) {
+  return stubWithOptionalHeading(content, [QR_SECTION, KB_SECTION].join("\n"));
+}
 
 /**
  * Ensure QR + KB markers exist in INSTRUCTIONS_MD.
@@ -119,7 +126,7 @@ export async function ensureMarkers() {
       let next = cur;
       if (qrNow === "missing" && kbNow === "missing") {
         if (!next.endsWith("\n")) next += "\n";
-        next += COMBINED_STUB;
+        next += combinedStub(next);
         result.qrInserted = true;
         result.kbInserted = true;
       } else if (qrNow === "missing") {

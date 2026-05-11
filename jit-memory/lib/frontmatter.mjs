@@ -12,7 +12,7 @@ const RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/;
 const KIND_VALUES = new Set(["fact", "protocol", "reference"]);
 export const TAG_CAP = 12;
 export const ALIAS_CAP = 8;
-export const TAG_RE = /^[a-z0-9][a-z0-9-]{0,39}$/;
+export const TAG_RE = /^[a-z0-9][a-z0-9-]{1,39}$/;
 export const ALIAS_MIN_CHARS = 3;
 export const ALIAS_MAX_CHARS = 40;
 
@@ -63,7 +63,7 @@ export function validateMeta(meta) {
   } else {
     for (const t of meta.tags) {
       if (typeof t !== "string" || !TAG_RE.test(t)) {
-        errors.push(`tags entry invalid: ${JSON.stringify(t)} (lowercase, digits, hyphens, ≤40 chars)`);
+        errors.push(`tags entry invalid: ${JSON.stringify(t)} (lowercase, digits, hyphens, 2–40 chars)`);
       }
     }
   }

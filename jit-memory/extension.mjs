@@ -28,16 +28,38 @@ import { truncateUtf8AtLineBoundary } from "./lib/utf8.mjs";
 
 // ── timeouts ────────────────────────────────────────────────────────────────
 const ROUTE_TIMEOUT_MS = 500;
+const PRE_SESSION_WARN_LIMIT = 20;
 
 // ── throttled session.log helper ────────────────────────────────────────────
+function warnToSession(session, msg) {
+  try { session.log(`jit-memory: ${msg}`, { level: "warning", ephemeral: true }); }
+  catch {}
+}
+
 function makeThrottledWarn(session, intervalMs = 5 * 60 * 1000) {
   let last = 0;
   return msg => {
     const now = Date.now();
     if (now - last < intervalMs) return;
     last = now;
-    try { session.log(`jit-memory: ${msg}`, { level: "warning", ephemeral: true }); }
-    catch {}
+    warnToSession(session, msg);
+  };
+}
+
+function makePreSessionWarnBuffer(limit = PRE_SESSION_WARN_LIMIT) {
+  const messages = [];
+  let overflowed = false;
+  return {
+    warn(msg) {
+      if (messages.length < limit) messages.push(msg);
+      else overflowed = true;
+    },
+    flush(session) {
+      for (const msg of messages) warnToSession(session, msg);
+      if (overflowed) warnToSession(session, "startup: dropped additional pre-session warnings");
+      messages.length = 0;
+      overflowed = false;
+    }
   };
 }
 
@@ -114,7 +136,7 @@ const CAPTURE_SCHEMA = {
     content:       { type: "string", description: "The lesson, ideally '<topic>: <what fails> → <what works>'. For quick_rule, ≤280 chars." },
     domain:        { type: "string", description: "Slug ^[a-z0-9][a-z0-9_-]{0,63}$. Required for all kinds except quick_rule." },
     summary:       { type: "string", description: "≤200 chars. Required for domain_new." },
-    tags:          { type: "array",  items: { type: "string" }, description: "1–12 lowercase tokens. Required for domain_new; for alias_add, supply tags and/or aliases." },
+    tags:          { type: "array",  items: { type: "string" }, description: "1–12 lowercase tokens, each 2–40 chars. Required for domain_new; for alias_add, supply tags and/or aliases." },
     aliases:       { type: "array",  items: { type: "string" }, description: "0–8 multi-word phrases (3–40 chars each). For alias_add, supply tags and/or aliases." },
     see_also:      { type: "array",  items: { type: "string" }, description: "0–4 related domain slugs." },
     section:       { type: "string", enum: ["working", "broken", "gotcha"], description: "Required for domain_update." },
@@ -145,7 +167,8 @@ const ROUTE_SCHEMA = {
 // hook closures can use it once the session is available.
 
 let session;
-let warn = () => {};
+const preSessionWarn = makePreSessionWarnBuffer();
+let warn = preSessionWarn.warn;
 const usage = new UsageTracker({ onFlushError: e => warn(`telemetry flush: ${e.message}`) });
 const lateWarn = msg => warn(msg);
 let noticesShown = new Set();
@@ -153,8 +176,8 @@ let noticesShown = new Set();
 function noticeOnce(key, msg) {
   if (noticesShown.has(key)) return;
   noticesShown.add(key);
-  try { session?.log(`jit-memory: ${msg}`, { level: "warning", ephemeral: true }); }
-  catch {}
+  if (session) warnToSession(session, msg);
+  else warn(msg);
 }
 
 function formatDriftReasons(reasons = []) {
@@ -311,5 +334,11 @@ const tools = [
   }
 ];
 
-session = await joinSession({ hooks, tools });
+try {
+  session = await joinSession({ hooks, tools });
+} catch (e) {
+  process.stderr.write(`jit-memory: failed to initialize extension session: ${e?.message || e}\n`);
+  throw e;
+}
 warn = makeThrottledWarn(session);
+preSessionWarn.flush(session);

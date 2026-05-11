@@ -21,7 +21,7 @@ await writeFile(
 
 const { capture } = await import("../lib/capture.mjs");
 const { route } = await import("../lib/router.mjs");
-const { assertRoutableKnowledgeFile } = await import("../lib/paths.mjs");
+const { assertRoutableKnowledgeFile, assertRoutableKnowledgeFileAsync } = await import("../lib/paths.mjs");
 
 function fmFile(meta, body = "body\n") {
   return `---\n${JSON.stringify(meta, null, 2)}\n---\n${body}`;
@@ -51,6 +51,10 @@ test("routing and capture refuse a symlinked markdown file under knowledge", asy
     () => assertRoutableKnowledgeFile(linkPath),
     /symlink not allowed under knowledge root/i
   );
+  await assert.rejects(
+    () => assertRoutableKnowledgeFileAsync(linkPath),
+    /symlink not allowed under knowledge root/i
+  );
 
   const r = await capture({
     kind: "domain_update",
@@ -74,6 +78,10 @@ test("routing refuses paths below a symlinked parent directory under knowledge",
     () => assertRoutableKnowledgeFile(join(linkDir, "outside.md")),
     /symlink not allowed under knowledge root/i
   );
+  await assert.rejects(
+    () => assertRoutableKnowledgeFileAsync(join(linkDir, "outside.md")),
+    /symlink not allowed under knowledge root/i
+  );
 
   const table = {
     version: 3,
@@ -92,6 +100,10 @@ test("routing refuses symlinks even when the target stays inside knowledge", asy
 
   assert.throws(
     () => assertRoutableKnowledgeFile(linkFile),
+    /symlink not allowed under knowledge root/i
+  );
+  await assert.rejects(
+    () => assertRoutableKnowledgeFileAsync(linkFile),
     /symlink not allowed under knowledge root/i
   );
 

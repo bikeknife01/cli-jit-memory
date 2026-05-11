@@ -14,6 +14,10 @@ export function setSyncOnce(fn) {
   return getTestHooks("sync").setSyncOnce(fn);
 }
 
+export function setRoutingReadFile(fn) {
+  return getTestHooks("sync").setRoutingReadFile(fn);
+}
+
 export function setCaptureSyncFn(fn) {
   return getTestHooks("capture").setSyncFn(fn);
 }
