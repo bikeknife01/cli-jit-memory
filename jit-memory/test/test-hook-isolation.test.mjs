@@ -15,7 +15,9 @@ test("production modules expose only their intended public API", async () => {
 
   assert.deepEqual(Object.keys(sync).sort(), [
     "KB_BEGIN",
+    "KB_BEGIN_NS",
     "KB_END",
+    "KB_END_NS",
     "drainSync",
     "kbBlockEquivalent",
     "listDomainFiles",
@@ -25,10 +27,16 @@ test("production modules expose only their intended public API", async () => {
   ]);
   assert.deepEqual(Object.keys(capture).sort(), [
     "QR_BEGIN",
+    "QR_BEGIN_NS",
     "QR_END",
+    "QR_END_NS",
     "capture",
     "debugRoute",
-    "refreshForbiddenMarkers"
+    "deleteDomain",
+    "deprecate",
+    "previewCapture",
+    "refreshForbiddenMarkers",
+    "status"
   ]);
   assert.deepEqual(Object.keys(router).sort(), [
     "consumeInvalidEntryCount",

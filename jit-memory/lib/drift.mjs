@@ -9,10 +9,11 @@
 //   - generated KB block format/content is stale
 
 import { promises as fs } from "node:fs";
-import { INSTRUCTIONS_MD, ROUTING_JSON } from "./paths.mjs";
-import { readWithStatOrNull } from "./atomic.mjs";
-import { classifyMarkerPair } from "./markers.mjs";
-import { KB_BEGIN, KB_END, kbBlockEquivalent, listDomainFiles, renderKbBlock } from "./sync.mjs";
+import { join } from "node:path";
+import { INSTRUCTIONS_MD, ROUTING_JSON, KNOWLEDGE_ROOT } from "./paths.mjs";
+import { readWithStatOrNull, atomicWrite } from "./atomic.mjs";
+import { classifyMarkerPair, pickMarkerPair } from "./markers.mjs";
+import { KB_BEGIN, KB_END, KB_BEGIN_NS, KB_END_NS, kbBlockEquivalent, listDomainFiles, renderKbBlock } from "./sync.mjs";
 
 export async function detectDrift({ markersResult } = {}) {
   const reasons = [];
@@ -59,14 +60,46 @@ export async function detectDrift({ markersResult } = {}) {
     }
 
     const instructions = await readWithStatOrNull(INSTRUCTIONS_MD);
-    if (instructions && classifyMarkerPair(instructions.content, KB_BEGIN, KB_END) === "ok") {
-      const start = instructions.content.indexOf(KB_BEGIN);
-      const end = instructions.content.indexOf(KB_END, start + KB_BEGIN.length);
-      const inner = instructions.content.slice(start + KB_BEGIN.length, end);
-      const expected = renderKbBlock(routingTable.domains || []);
-      if (!kbBlockEquivalent(inner, expected)) reasons.push("kb_format_outdated");
+    if (instructions) {
+      const kbPair = pickMarkerPair(instructions.content, KB_BEGIN_NS, KB_END_NS, KB_BEGIN, KB_END);
+      if (classifyMarkerPair(instructions.content, kbPair.begin, kbPair.end) === "ok") {
+        const start = instructions.content.indexOf(kbPair.begin);
+        const end = instructions.content.indexOf(kbPair.end, start + kbPair.begin.length);
+        const inner = instructions.content.slice(start + kbPair.begin.length, end);
+        const expected = renderKbBlock(routingTable.domains || []);
+        if (!kbBlockEquivalent(inner, expected)) reasons.push("kb_format_outdated");
+      }
     }
   }
 
   return { drifted: reasons.length > 0, reasons };
+}
+
+// Item #24: persist a single drift-heal note that the next session-start
+// hook can include in additionalContext. Drift heal runs asynchronously
+// after the current session's digest has been computed, so without this
+// the message is only visible via the throttled session.log warning.
+const DRIFT_NOTE_FILE = "_drift-note.json";
+
+export async function writeLastDriftNote(note) {
+  const path = join(KNOWLEDGE_ROOT, DRIFT_NOTE_FILE);
+  try {
+    await fs.mkdir(KNOWLEDGE_ROOT, { recursive: true });
+    await atomicWrite(path, JSON.stringify(note, null, 2));
+  } catch { /* best-effort */ }
+}
+
+export async function readLastDriftNote() {
+  const path = join(KNOWLEDGE_ROOT, DRIFT_NOTE_FILE);
+  try {
+    const raw = await fs.readFile(path, "utf8");
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object" && typeof parsed.message === "string") return parsed;
+  } catch { /* no note */ }
+  return null;
+}
+
+export async function clearLastDriftNote() {
+  try { await fs.unlink(join(KNOWLEDGE_ROOT, DRIFT_NOTE_FILE)); }
+  catch { /* not present */ }
 }

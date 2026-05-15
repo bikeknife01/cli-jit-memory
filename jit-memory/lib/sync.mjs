@@ -10,9 +10,13 @@ import { invalidateRoutingCache } from "./router.mjs";
 import { registerTestHooks } from "./test-hook-registry.mjs";
 import { pruneUsageDomains, usageDomainsForFile } from "./usage.mjs";
 import { logEvent } from "./jitlog.mjs";
+import { pickMarkerPair } from "./markers.mjs";
 
-export const KB_BEGIN = "<!-- KB:BEGIN -->";
-export const KB_END   = "<!-- KB:END -->";
+export const KB_BEGIN = "<!-- KB:BEGIN -->";          // legacy, read-write supported
+export const KB_END   = "<!-- KB:END -->";            // legacy, read-write supported
+// Item #9: namespaced form for new installs.
+export const KB_BEGIN_NS = "<!-- jit-memory:KB:BEGIN -->";
+export const KB_END_NS   = "<!-- jit-memory:KB:END -->";
 
 // Cross-process lock spanning the entire sync pass (list -> parse -> write
 // routing -> write KB). Prevents two CLI sessions from racing each other and
@@ -210,7 +214,11 @@ async function readExistingRoutingTable() {
 async function _syncOnceReal() {
   // Make KNOWLEDGE_ROOT exist before withLock tries to create the lockfile in it.
   await fs.mkdir(KNOWLEDGE_ROOT, { recursive: true });
-  return await withLock(SYNC_LOCK, () => _syncOnceUnlocked());
+  // Item #28: sync may take longer than the default 2 s timeout when the KB
+  // is large or the disk is slow (AV scanning, OneDrive). Allow up to 10 s
+  // to acquire SYNC_LOCK, with a 60 s stale window. The heartbeat in
+  // withLock keeps live holders from being falsely evicted.
+  return await withLock(SYNC_LOCK, () => _syncOnceUnlocked(), { timeoutMs: 10_000, staleMs: 60_000 });
 }
 
 async function _syncOnceUnlocked() {
@@ -283,8 +291,10 @@ async function _syncOnceUnlocked() {
   let kbStatus = "skipped_instructions_missing";
   const exists = await readWithStatOrNull(INSTRUCTIONS_MD);
   if (exists) {
+    // Item #9: pick which marker pair the file is using (legacy vs namespaced).
+    const kbPair = pickMarkerPair(exists.content, KB_BEGIN_NS, KB_END_NS, KB_BEGIN, KB_END);
     const r = await casReplaceMarkers(
-      INSTRUCTIONS_MD, KB_BEGIN, KB_END,
+      INSTRUCTIONS_MD, kbPair.begin, kbPair.end,
       (_freshContent, freshInner) => {
         const fresh = renderKbBlock(entries);
         if (kbBlockEquivalent(freshInner, fresh)) return null;

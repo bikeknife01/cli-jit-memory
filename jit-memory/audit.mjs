@@ -8,6 +8,7 @@ import { audit } from "./lib/audit.mjs";
 import { drainSync } from "./lib/sync.mjs";
 import { withTimeout } from "./lib/timeout.mjs";
 import { logEvent } from "./lib/jitlog.mjs";
+import { migrateKnowledgeIfNeeded, isMigrationBlockingResult } from "./lib/migrate.mjs";
 import { pathToFileURL } from "node:url";
 import { resolve } from "node:path";
 
@@ -35,10 +36,16 @@ function write(stream, text) {
 export async function runAuditCli({
   auditFn = audit,
   drainFn = drainAfterAudit,
+  migrateFn = migrateKnowledgeIfNeeded,
   stdout = process.stdout,
   stderr = process.stderr
 } = {}) {
   try {
+    const mig = await migrateFn();
+    if (isMigrationBlockingResult(mig)) {
+      write(stderr, `jit-memory: knowledge migration unresolved (status=${mig.status}); refusing to audit. Resolve manually then re-run.\n`);
+      return 2;
+    }
     const r = await auditFn({ archivalAllowed: true });
     try {
       await drainFn();

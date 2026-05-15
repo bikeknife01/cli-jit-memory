@@ -23,6 +23,7 @@ test("runAuditCli reports healthy success after drain", async () => {
   const code = await runAuditCli({
     auditFn: async () => ({ healthy: true }),
     drainFn: async () => { drained = true; },
+    migrateFn: async () => ({ status: "skipped_override" }),
     stdout: stdout.stream,
     stderr: stderr.stream
   });
@@ -38,6 +39,7 @@ test("runAuditCli reports digest success with archive count", async () => {
   const code = await runAuditCli({
     auditFn: async () => ({ healthy: false, archived: [{ from: "old.md" }, { from: "older.md" }] }),
     drainFn: async () => {},
+    migrateFn: async () => ({ status: "skipped_override" }),
     stdout: stdout.stream,
     stderr: streamCapture().stream
   });
@@ -53,6 +55,7 @@ test("runAuditCli distinguishes audit failure from drain failure", async () => {
   const code = await runAuditCli({
     auditFn: async () => { throw new Error("frontmatter exploded"); },
     drainFn: async () => { throw new Error("must not run"); },
+    migrateFn: async () => ({ status: "skipped_override" }),
     stdout: stdout.stream,
     stderr: stderr.stream
   });
@@ -71,6 +74,7 @@ test("runAuditCli reports post-audit drain failure after audit succeeds", async 
   const code = await runAuditCli({
     auditFn: async () => ({ healthy: true }),
     drainFn: async () => { throw new Error("drain timeout"); },
+    migrateFn: async () => ({ status: "skipped_override" }),
     stdout: stdout.stream,
     stderr: stderr.stream
   });
@@ -80,6 +84,23 @@ test("runAuditCli reports post-audit drain failure after audit succeeds", async 
   assert.match(stderr.text, /audit completed but post-audit sync drain failed/);
   assert.match(stderr.text, /drain timeout/);
   assert.doesNotMatch(stderr.text, /jit-memory audit failed:/);
+});
+
+test("runAuditCli refuses with code 2 when migration is blocked", async () => {
+  const stdout = streamCapture();
+  const stderr = streamCapture();
+  let auditRan = false;
+  const code = await runAuditCli({
+    auditFn: async () => { auditRan = true; return { healthy: true }; },
+    drainFn: async () => {},
+    migrateFn: async () => ({ status: "collision", legacy: "/x", new: "/y" }),
+    stdout: stdout.stream,
+    stderr: stderr.stream
+  });
+  assert.equal(code, 2);
+  assert.equal(auditRan, false);
+  assert.match(stderr.text, /knowledge migration unresolved/);
+  assert.match(stderr.text, /collision/);
 });
 
 test("audit.mjs production entry exits 0 and writes healthy output", async () => {

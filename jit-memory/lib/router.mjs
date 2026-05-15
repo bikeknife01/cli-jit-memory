@@ -115,54 +115,63 @@ function isStale(verifiedISO) {
 
 // Pure routing: takes a normalized intent and a routing table, returns matches.
 // Exposed for testing without filesystem.
+//
+// Scoring (item #12): each match contributes a numeric score so multi-term
+// matches outrank single-token matches when picking the top-3 primary
+// entries. Alias hits are weighted higher than tag hits.
+//   alias hit = +3
+//   tag hit   = +1
+//   per-extra-character of matched alias = +0.05  (more specific aliases win)
+// Confidence is derived from the score:
+//   score >= 3 → "high"   (alias match, or 3+ tag hits)
+//   score >= 1 → "medium" (single tag hit, or short alias)
+//   else        → no match
 export function route(intent, table) {
   const text = String(intent || "").toLowerCase();
   if (!text) return [];
 
-  const primary = []; // { entry, matched, confidence }
+  const primary = []; // { entry, matched, confidence, score }
   for (const e of table.domains || []) {
     if (e.deprecated) continue;
     const hits = new Set();
-    let confidence = null;
+    let aliasMatched = false;
+    let aliasBonus = 0;
 
-    // Aliases first — substring match (aliases are explicit phrases).
     for (const a of e.aliases || []) {
       if (typeof a !== "string" || a.length < 3) continue;
-      if (text.includes(a.toLowerCase())) {
+      const lower = a.toLowerCase();
+      // Item #25: a single-word alias (no whitespace) is matched with the
+      // same word-boundary semantics as a tag, so "app" doesn't match
+      // inside "happy". Multi-word aliases are matched as substrings
+      // (they're explicit phrases).
+      const matched = /\s/.test(lower)
+        ? text.includes(lower)
+        : tagRegex(lower).test(text);
+      if (matched) {
         hits.add(a);
-        confidence = "high";
+        aliasMatched = true;
+        aliasBonus += a.length * 0.05;
       }
     }
 
-    // Tags — word-boundary match. Skip if alias already matched.
-    if (confidence !== "high") {
-      for (const t of e.tags || []) {
-        if (typeof t !== "string" || t.length < 2) continue;
-        if (tagRegex(t).test(text)) {
-          hits.add(t);
-          confidence = "medium";
-        }
-      }
-    } else {
-      // Still record matched tags for transparency, but don't change confidence.
-      for (const t of e.tags || []) {
-        if (typeof t !== "string" || t.length < 2) continue;
-        if (tagRegex(t).test(text)) hits.add(t);
+    let tagHits = 0;
+    for (const t of e.tags || []) {
+      if (typeof t !== "string" || t.length < 2) continue;
+      if (tagRegex(t).test(text)) {
+        hits.add(t);
+        tagHits++;
       }
     }
 
-    if (confidence) {
-      primary.push({
-        entry: e,
-        matched: [...hits],
-        confidence
-      });
-    }
+    const score = (aliasMatched ? 3 : 0) + aliasBonus + tagHits;
+    if (score < 1) continue;
+    const confidence = score >= 3 ? "high" : "medium";
+    primary.push({ entry: e, matched: [...hits], confidence, score });
   }
 
-  // Sort: high before medium; then by slug for stability.
+  // Sort: by score descending; then by slug for stability.
   primary.sort((a, b) => {
-    if (a.confidence !== b.confidence) return a.confidence === "high" ? -1 : 1;
+    if (b.score !== a.score) return b.score - a.score;
     return (a.entry.domain || "").localeCompare(b.entry.domain || "");
   });
 
@@ -182,7 +191,8 @@ export function route(intent, table) {
       extras.push({
         entry: target,
         matched: [`see_also:${m.entry.domain}`],
-        confidence: "low"
+        confidence: "low",
+        score: 0
       });
     }
     if (extras.length >= 2) break;

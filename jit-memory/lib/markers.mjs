@@ -46,3 +46,33 @@ export function classifyMarkerPair(content, beginMarker, endMarker) {
   }
   return "malformed";
 }
+
+// Item #9: choose which marker pair (namespaced vs legacy) is active in this
+// file. Existing users have legacy `<!-- QR:BEGIN -->` markers in their
+// instructions; new installs get the namespaced form
+// `<!-- jit-memory:QR:BEGIN -->` from the snippet. We never silently rewrite
+// a user's chosen form.
+//
+// Detection is whitespace-tolerant: a malformed legacy variant like
+// `<!--QR:BEGIN-->` is still recognised as legacy so classifyMarkerPair can
+// later flag it malformed instead of bootstrap silently inserting a fresh
+// namespaced pair alongside.
+//
+// Returns `{ begin, end, form }` where form is "namespaced" | "legacy" |
+// "default-namespaced".
+export function pickMarkerPair(content, namespacedBegin, namespacedEnd, legacyBegin, legacyEnd) {
+  const text = content || "";
+  const hasVariant = (marker) => {
+    const label = markerLabel(marker);
+    if (!label) return text.includes(marker);
+    const re = new RegExp(`<!--\\s*${escapeRegExp(label)}\\s*-->`);
+    return re.test(text);
+  };
+  if (hasVariant(namespacedBegin) || hasVariant(namespacedEnd)) {
+    return { begin: namespacedBegin, end: namespacedEnd, form: "namespaced" };
+  }
+  if (hasVariant(legacyBegin) || hasVariant(legacyEnd)) {
+    return { begin: legacyBegin, end: legacyEnd, form: "legacy" };
+  }
+  return { begin: namespacedBegin, end: namespacedEnd, form: "default-namespaced" };
+}

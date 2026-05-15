@@ -1,53 +1,80 @@
 # Installation
 
+> **Privacy in 2 lines.** `jit-memory` saves lessons as plain-text Markdown files
+> on your local disk and may include them in future Copilot prompts. **Do not
+> capture passwords, tokens, customer data, private hostnames, or sensitive
+> personal details.** The extension also runs a deterministic redaction scan
+> at capture time, but you are the final line of defense.
+
 ## Quickstart (5 minutes, non-technical)
 
 If you just want it working:
+
+0. **Get the files.** Download or clone this repository to your computer:
+   - **Easiest (no git needed):** open
+     `https://github.com/bikeknife01/cli-jit-memory` in a browser, click
+     **Code → Download ZIP**, unzip the file, and open the unzipped
+     `cli-jit-memory` folder. You should see `INSTALL.md`, `README.md`,
+     `copilot-instructions.snippet.md`, and a folder named `jit-memory`.
+   - **With git:** `git clone https://github.com/bikeknife01/cli-jit-memory`
+     and `cd cli-jit-memory`.
 
 1. **Check you have the right version.** Open a terminal and run:
    ```
    copilot --version
    ```
-   You should see `1.0.36` or higher. If not, run `copilot update`.
+   You should see `1.0.36` or higher. If the number is lower, try
+   `copilot update`. If `copilot update` does not work for your install
+   (managed by Homebrew, npm, your IT team, etc.), update Copilot CLI the
+   same way you originally installed it, then re-open the terminal and
+   re-check the version.
 
-2. **Enable experimental features.** As of the current Copilot CLI version,
-   extensions are available only when experimental features are turned on.
-   Start Copilot CLI and run `/experimental` to check whether experimental mode
-   is enabled and to see which experimental features are enabled or available.
-   If it is not enabled, either run `/experimental` and enable it there, or
-   launch once with:
+2. **Enable experimental features.** Extensions currently require
+   experimental mode in Copilot CLI. Easiest path for non-technical users:
    ```
    copilot --experimental
    ```
+   Launching once with this flag enables experimental mode and persists the
+   setting. (If you prefer to do it from inside Copilot, start `copilot`
+   normally and type `/experimental` at the Copilot prompt — that's a
+   slash-command typed INSIDE Copilot, not a terminal command.)
 
-   The setting is persisted after it is enabled. Experimental features are still
-   in development and may change, break, or be removed without the same
-   compatibility guarantees as stable features.
+   Experimental features are still in development and may change, break, or
+   be removed without the same compatibility guarantees as stable features.
 
-3. **Copy the extension folder.** Find the `jit-memory` folder inside this
-   repository or downloaded package. Copy it (the whole folder) into:
+3. **Copy the extension folder.** From the unzipped/cloned `cli-jit-memory`
+   folder you opened in step 0, copy the inner `jit-memory` folder (the one
+   that contains `extension.mjs`) into:
    - **Windows:** `C:\Users\<your-username>\.copilot\extensions\`
-   - **Mac/Linux:** `~/.copilot/extensions/`
+     (paste `%USERPROFILE%\.copilot\extensions` into Explorer's address
+     bar to navigate there. If `extensions` doesn't exist, create it.)
+   - **macOS / Linux:** `~/.copilot/extensions/`
 
-   Create the `extensions` folder first if it doesn't exist. When you're
-   done, this file should exist:
-   `~/.copilot/extensions/jit-memory/extension.mjs`
+   When you're done, this exact file should exist:
+   `~/.copilot/extensions/jit-memory/extension.mjs` (Windows:
+   `C:\Users\<you>\.copilot\extensions\jit-memory\extension.mjs`).
 
-4. **Add the snippet to your instructions file.** Open
-   `~/.copilot/copilot-instructions.md` in any text editor (create it if it
-   doesn't exist). Open `copilot-instructions.snippet.md` from this package,
-   copy everything in it, and paste it at the bottom of your instructions
-   file. Save.
+4. **Add the snippet to your instructions file.** Use a **plain-text editor**
+   (Windows Notepad and VS Code are fine; on macOS, if you use TextEdit,
+   choose **Format → Make Plain Text** before saving — never save as `.rtf`).
+   Open `~/.copilot/copilot-instructions.md` (create the file if it doesn't
+   exist). Then open `copilot-instructions.snippet.md` from this package,
+   **select all (Ctrl+A or ⌘+A) → copy → paste at the bottom** of your
+   instructions file → save. It is fine to include the leading
+   `<!-- jit-memory orchestration block ... -->` comment when you copy.
 
 5. **Restart Copilot CLI.** Close it completely and start it again. Look at
-   the startup banner — it should say something like
-   `Environment loaded: ... 1 extension ...`.
+   the startup banner — it should mention `... 1 extension ...` (or
+   `2 extensions`, etc., if you have other extensions installed). Anything
+   non-zero is healthy. If the banner says `0 extensions`, see Troubleshooting.
 
 6. **Optional: retrofit existing notes.** If your instructions file already
-   contains durable knowledge you want `jit-memory` to route and recall, use
-   `retrofit-existing-instructions.md` as a one-time prompt after restarting.
-   It creates a backup, captures migrated items through `jit_memory_capture`,
-   and reports what moved. That's it.
+   contains durable knowledge you want `jit-memory` to route and recall,
+   open `retrofit-existing-instructions.md`, copy the text under `## Prompt`,
+   paste it into Copilot CLI as one message, and press Enter. It creates a
+   backup, presents a dry-run inventory you can approve, captures the
+   approved items, and reports what moved. Skip this step if you don't have
+   anything to migrate.
 
 You're done. No `npm install`, no admin privileges, no extra software. The
 detailed install instructions below cover edge cases, scheduling the audit
@@ -55,9 +82,37 @@ job, and troubleshooting.
 
 ---
 
-The extension lives at `~/.copilot/extensions/jit-memory/`. You drop the
-`jit-memory/` directory in place and add ~15 lines to your global instructions.
-That's the entire install.
+The extension code lives at `~/.copilot/extensions/jit-memory/`. You drop
+the `jit-memory/` directory in place and add ~15 lines to your global
+instructions. That's the entire install.
+
+**Where your data lives.** Captured knowledge files live OUTSIDE the
+extension folder, at `~/.copilot/jit-memory/knowledge/` (Windows:
+`C:\Users\<your-name>\.copilot\jit-memory\knowledge\`), so re-installing or
+upgrading the extension never touches your data. If you are upgrading from
+an older build that stored knowledge at `~/.copilot/extensions/jit-memory/knowledge/`,
+the extension migrates the data on the next session start; you'll see a
+one-time `kb migrated from ... → ...` notice.
+
+## What you'll notice after installing
+
+You keep using Copilot normally. The extension is mostly invisible.
+
+- When something useful happens that may matter again, Copilot may save a
+  short local memory by calling its `jit_memory_capture` tool. You'll see
+  the tool call in the chat transcript.
+- Memories live in `~/.copilot/jit-memory/knowledge/` as plain Markdown
+  files. **You can open and read them at any time.**
+- Quick Rules (universal cross-cutting rules) appear in your
+  `~/.copilot/copilot-instructions.md` between the
+  `<!-- jit-memory:QR:BEGIN -->` and `<!-- jit-memory:QR:END -->` markers.
+- To remove a bad memory, ask Copilot to use `jit_memory_delete {domain, confirm:true}`
+  (immediate; moves the file to `_archive/`) or `jit_memory_deprecate {domain}`
+  (graceful; routing skips it on the next prompt). You can also delete or
+  edit knowledge files manually under `~/.copilot/jit-memory/knowledge/` —
+  the next sync regenerates routing automatically.
+- To see what's stored and whether the extension is healthy, ask Copilot:
+  "Run `jit_memory_status`."
 
 ## Dependencies
 
@@ -216,9 +271,9 @@ Register-ScheduledTask -TaskName 'JIT-Memory Audit' -Action $action -Trigger $tr
 0 6 * * *  /usr/bin/env node "$HOME/.copilot/extensions/jit-memory/audit.mjs"
 ```
 
-`audit.mjs` exits 0 unless an internal error or sync-drain timeout occurs. A
-non-empty digest at
-`~/.copilot/extensions/jit-memory/knowledge/_curator-digest.md` is **content**,
+`audit.mjs` exits 0 unless an internal error or sync-drain timeout occurs;
+it exits 2 if knowledge migration is unresolved. A non-empty digest at
+`~/.copilot/jit-memory/knowledge/_curator-digest.md` is **content**,
 not a failure — monitor that file's mtime/content if you want notifications.
 
 ## 5. Troubleshooting
@@ -253,7 +308,7 @@ one-character tags, edit those tags to longer values so the files continue to
 route.
 
 **Where do I edit a captured lesson?**
-Open the relevant file in `~/.copilot/extensions/jit-memory/knowledge/` and edit
+Open the relevant file in `~/.copilot/jit-memory/knowledge/` and edit
 freely. The next sync (triggered by any subsequent `jit_memory_capture` or
 `jit_memory_audit`) will regenerate the routing cache.
 
@@ -266,14 +321,25 @@ the signpost only refreshes next session. The router itself is always live.
 ## Uninstall
 
 ```powershell
-# Windows
+# Windows: remove the extension code and (optionally) the data
 Remove-Item -Recurse -Force "$env:USERPROFILE\.copilot\extensions\jit-memory"
+# Optional — also delete your captured knowledge (this is your data, not code):
+Remove-Item -Recurse -Force "$env:USERPROFILE\.copilot\jit-memory"
 ```
 
 ```bash
 # macOS / Linux
 rm -rf "$HOME/.copilot/extensions/jit-memory"
+# Optional — also delete your captured knowledge:
+rm -rf "$HOME/.copilot/jit-memory"
 ```
 
 Then remove the snippet block from `~/.copilot/copilot-instructions.md` and
-the scheduled task (if you created one). Nothing else is touched.
+the scheduled task (if you created one). If you created a Task Scheduler job:
+
+```powershell
+Unregister-ScheduledTask -TaskName 'JIT-Memory Audit' -Confirm:$false
+```
+
+If you added a cron entry, edit your crontab with `crontab -e` and remove the
+`jit-memory` line.

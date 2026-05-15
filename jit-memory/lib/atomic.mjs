@@ -73,10 +73,22 @@ export async function readWithStatOrNull(path, opts) {
 // Advisory file lock: fs.open(<file>.lock, "wx") — exclusive create.
 // Stale lock removal: if mtime older than staleMs, force-unlink and retry.
 // Bounded wait via timeoutMs.
+//
+// On ENOENT (lock parent does not yet exist — e.g. a fresh-install audit run
+// where knowledge/ has never been created), mkdir the parent recursively and
+// retry. The mkdir is lazy to avoid changing relative timing for callers
+// whose parent already exists (which is the common case).
+//
+// While the lock is held, a heartbeat refreshes the lock file's mtime every
+// staleMs/3 so that slow operations (large EXDEV migration, EPERM-retry
+// storm under AV) are not falsely classified as stale by another waiter
+// (item #5). The heartbeat is best-effort; if a single touch fails the
+// lock semantics are unaffected on the next successful touch.
 export async function withLock(filePath, fn, { timeoutMs = 2000, staleMs = 30000 } = {}) {
   const lockPath = filePath + LOCK_SUFFIX;
   const deadline = Date.now() + timeoutMs;
   let acquired = false;
+  let mkdirAttempted = false;
 
   while (!acquired) {
     try {
@@ -86,6 +98,12 @@ export async function withLock(filePath, fn, { timeoutMs = 2000, staleMs = 30000
       await fh.close();
       acquired = true;
     } catch (e) {
+      if (e.code === "ENOENT" && !mkdirAttempted) {
+        // Lock parent doesn't exist yet — create it and retry.
+        mkdirAttempted = true;
+        await fs.mkdir(dirname(lockPath), { recursive: true });
+        continue;
+      }
       if (e.code !== "EEXIST") throw e;
       // Lock held — check if stale.
       let st;
@@ -106,9 +124,20 @@ export async function withLock(filePath, fn, { timeoutMs = 2000, staleMs = 30000
     }
   }
 
+  // Heartbeat: refresh the lock's mtime well before staleMs elapses so
+  // a slow holder is not falsely judged stale by a concurrent waiter.
+  const heartbeatPeriod = Math.max(50, Math.floor(staleMs / 3));
+  const heartbeat = setInterval(async () => {
+    const now = new Date();
+    try { await fs.utimes(lockPath, now, now); }
+    catch { /* race: lock may already be gone after fn() finished */ }
+  }, heartbeatPeriod);
+  if (typeof heartbeat.unref === "function") heartbeat.unref();
+
   try {
     return await fn();
   } finally {
+    clearInterval(heartbeat);
     try { await fs.unlink(lockPath); } catch { /* best effort */ }
   }
 }

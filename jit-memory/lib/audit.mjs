@@ -8,11 +8,12 @@ import { join, dirname } from "node:path";
 import {
   KNOWLEDGE_ROOT, ARCHIVE_DIR, INSTRUCTIONS_MD, DIGEST_MD, ROUTING_JSON
 } from "./paths.mjs";
-import { atomicWrite, readWithStatOrNull } from "./atomic.mjs";
+import { atomicWrite, readWithStatOrNull, withLock } from "./atomic.mjs";
 import { parse, validateMeta } from "./frontmatter.mjs";
 import { loadUsage, pruneUsageDomains, usageDomainsForFile } from "./usage.mjs";
-import { QR_BEGIN, QR_END } from "./capture.mjs";
-import { KB_BEGIN, KB_END, syncNow, renderKbBlock } from "./sync.mjs";
+import { QR_BEGIN, QR_END, QR_BEGIN_NS, QR_END_NS } from "./capture.mjs";
+import { KB_BEGIN, KB_END, KB_BEGIN_NS, KB_END_NS, syncNow, renderKbBlock } from "./sync.mjs";
+import { pickMarkerPair } from "./markers.mjs";
 import { truncateUtf8AtLineBoundary, utf8ByteLength } from "./utf8.mjs";
 
 const STALE_WARN_DAYS  = 30;
@@ -144,14 +145,17 @@ export async function audit({ archivalAllowed = false } = {}) {
   // 8. Marker presence.
   const inst = await readWithStatOrNull(INSTRUCTIONS_MD);
   if (inst) {
-    findings.markersMissing.qr = inst.content.indexOf(QR_BEGIN) < 0 || inst.content.indexOf(QR_END) < 0;
-    findings.markersMissing.kb = inst.content.indexOf(KB_BEGIN) < 0 || inst.content.indexOf(KB_END) < 0;
+    // Item #9: accept either the namespaced or legacy marker form.
+    const qrPair = pickMarkerPair(inst.content, QR_BEGIN_NS, QR_END_NS, QR_BEGIN, QR_END);
+    const kbPair = pickMarkerPair(inst.content, KB_BEGIN_NS, KB_END_NS, KB_BEGIN, KB_END);
+    findings.markersMissing.qr = inst.content.indexOf(qrPair.begin) < 0 || inst.content.indexOf(qrPair.end) < 0;
+    findings.markersMissing.kb = inst.content.indexOf(kbPair.begin) < 0 || inst.content.indexOf(kbPair.end) < 0;
 
     // Quick Rules count.
-    const start = inst.content.indexOf(QR_BEGIN);
-    const end   = inst.content.indexOf(QR_END, start + (start >= 0 ? QR_BEGIN.length : 0));
+    const start = inst.content.indexOf(qrPair.begin);
+    const end   = inst.content.indexOf(qrPair.end, start + (start >= 0 ? qrPair.begin.length : 0));
     if (start >= 0 && end >= 0) {
-      const inner = inst.content.slice(start + QR_BEGIN.length, end);
+      const inner = inst.content.slice(start + qrPair.begin.length, end);
       const count = (inner.match(/^[ \t]*[-*]\s+\S/gm) || []).length;
       if (count > QR_CAP) findings.quickRulesOver = { count, cap: QR_CAP };
     }
@@ -167,9 +171,32 @@ export async function audit({ archivalAllowed = false } = {}) {
       const src = join(KNOWLEDGE_ROOT, dep.file);
       const dst = join(ARCHIVE_DIR, dep.file);
       try {
-        await fs.mkdir(dirname(dst), { recursive: true });
-        await fs.rename(src, dst);
-        archived.push({ from: dep.file, to: `_archive/${dep.file}` });
+        // Item #6: hold the per-file lock during the rename and re-validate
+        // deprecation eligibility inside the lock. Without this, a concurrent
+        // domain_update or alias_add touching the same file could land its
+        // write between our snapshot and the rename, producing a duplicate
+        // (active+archived) or a lost update.
+        await withLock(src, async () => {
+          const fresh = await readWithStatOrNull(src);
+          if (!fresh) {
+            // Source vanished between scan and lock — nothing to archive.
+            return;
+          }
+          let parsed;
+          try { parsed = parse(fresh.content); }
+          catch (e) {
+            // Frontmatter no longer parseable — skip and report.
+            findings.frontmatterErrors.push({ file: dep.file, error: `archive re-parse: ${e.message}` });
+            return;
+          }
+          if (!parsed?.meta?.deprecated) return;            // un-deprecated under us
+          const t = Date.parse(parsed.meta.deprecated);
+          if (!Number.isFinite(t)) return;
+          if (daysAgo(t) <= DEPRECATED_DAYS) return;        // not eligible anymore
+          await fs.mkdir(dirname(dst), { recursive: true });
+          await fs.rename(src, dst);
+          archived.push({ from: dep.file, to: `_archive/${dep.file}` });
+        });
       } catch (e) {
         findings.frontmatterErrors.push({ file: dep.file, error: `archive: ${e.message}` });
       }

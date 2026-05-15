@@ -2,7 +2,12 @@
 
 `jit-memory` keeps a small operational knowledge base for GitHub Copilot CLI and routes relevant lessons into future prompts just in time.
 
-Markdown files under `knowledge/` are the source of truth. Generated files such as `knowledge/_routing.json`, `knowledge/_usage.json`, and the compact domain/file KB signpost in `copilot-instructions.md` are rebuilt from those source files.
+Markdown files under `knowledge/` are the source of truth. The default
+production location is `~/.copilot/jit-memory/knowledge/` (a path independent
+of the extension code folder, so re-installing the extension never destroys
+your data). Generated files such as `knowledge/_routing.json`,
+`knowledge/_usage.json`, and the compact domain/file KB signpost in
+`copilot-instructions.md` are rebuilt from those source files.
 
 ## Features
 

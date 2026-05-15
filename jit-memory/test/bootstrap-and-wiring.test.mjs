@@ -148,7 +148,7 @@ test("ensureMarkers inserts only KB subsection when OKB heading already exists",
 
 // ── ensureMarkers: both missing ─────────────────────────────────────────────
 
-test("ensureMarkers inserts both when both missing", async () => {
+test("ensureMarkers inserts both when both missing (namespaced form for fresh installs)", async () => {
   await withInstructions(
     "# user instructions\n\nSome content.\n",
     async () => {
@@ -159,18 +159,18 @@ test("ensureMarkers inserts both when both missing", async () => {
       assert.equal((after.match(/## Operational Knowledge Base \(jit-memory\)/g) || []).length, 1);
       assert.match(after, /### Quick Rules — managed by jit_memory_capture/);
       assert.match(after, /### Domain Index/);
-      assert.match(after, /<!-- QR:BEGIN -->/);
-      assert.match(after, /<!-- QR:END -->/);
-      assert.match(after, /<!-- KB:BEGIN -->/);
-      assert.match(after, /<!-- KB:END -->/);
-      assert.match(after, /<!-- QR:END -->\n\n### Domain Index/);
+      assert.match(after, /<!-- jit-memory:QR:BEGIN -->/);
+      assert.match(after, /<!-- jit-memory:QR:END -->/);
+      assert.match(after, /<!-- jit-memory:KB:BEGIN -->/);
+      assert.match(after, /<!-- jit-memory:KB:END -->/);
+      assert.match(after, /<!-- jit-memory:QR:END -->\n\n### Domain Index/);
       // Original content preserved at top.
       assert.ok(after.startsWith("# user instructions\n"), "original prefix preserved");
     }
   );
 });
 
-test("ensureMarkers inserts both marker sections under an edited OKB heading", async () => {
+test("ensureMarkers inserts both marker sections under an edited OKB heading (namespaced)", async () => {
   await withInstructions(
     "# header\n\n# Operational Knowledge Base (jit-memory)   \n\nExisting notes.\n",
     async () => {
@@ -181,8 +181,8 @@ test("ensureMarkers inserts both marker sections under an edited OKB heading", a
       assert.equal((after.match(/^#{1,6}\s+Operational Knowledge Base \(jit-memory\)\s*$/gim) || []).length, 1);
       assert.match(after, /### Quick Rules — managed by jit_memory_capture/);
       assert.match(after, /### Domain Index/);
-      assert.match(after, /<!-- QR:BEGIN -->/);
-      assert.match(after, /<!-- KB:BEGIN -->/);
+      assert.match(after, /<!-- jit-memory:QR:BEGIN -->/);
+      assert.match(after, /<!-- jit-memory:KB:BEGIN -->/);
     }
   );
 });
@@ -212,7 +212,7 @@ test("ensureMarkers handles file without trailing newline", async () => {
     assert.equal(r.qrInserted, true);
     const after = await readFile(INSTR, "utf8");
     assert.ok(after.includes("# header\nno trailing newline\n"), "preserves original then appends");
-    assert.match(after, /<!-- QR:BEGIN -->/);
+    assert.match(after, /<!-- jit-memory:QR:BEGIN -->/);
   });
 });
 
@@ -300,8 +300,9 @@ test("extension.mjs registers hooks/tools via joinSession options", async () => 
   assert.match(src, /import\s+\{\s*syncNow,\s*drainSync,\s*requestSync\s*\}\s+from\s+"\.\/lib\/sync\.mjs"/);
   assert.match(src, /onSessionEnd[\s\S]*?drainSync\s*\(/);
   // Bootstrap result is gated for marker-dependent tools (race fix from
-  // rubber-duck review of fix #7).
-  assert.match(src, /gateOnMarkers\s*\(/);
+  // rubber-duck review of fix #7); the gate now also awaits migration and
+  // refuses writes when the migration is blocked (item #1).
+  assert.match(src, /gateOnReady\s*\(/);
   // Fire-and-forget bootstrap must have a terminal .catch().
   assert.match(src, /ensureMarkers\(\)[\s\S]*?\.catch\s*\(/);
   // Startup diagnostics must not silently drop warnings before joinSession

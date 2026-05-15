@@ -10,27 +10,65 @@ import { promises as fs, lstatSync } from "node:fs";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = dirname(__filename);
 
-// Extension root = parent of lib/. May be overridden via JITMEM_EXT_ROOT for
-// testability ONLY. Override is taken at module load time. A stderr warning
-// fires whenever an override is active so it's never silent in production.
+// Path resolution for jit-memory.
+//
+// In production (no env overrides), user knowledge data lives OUTSIDE the
+// extension folder so a "delete and re-copy" upgrade does not destroy it:
+//
+//   ${homedir()}/.copilot/jit-memory/knowledge/
+//
+// Legacy installs co-located knowledge under the extension folder
+// (${EXT_ROOT}/knowledge); the migrator at lib/migrate.mjs moves that data
+// into the new home on first run.
+//
+// Resolution precedence (highest first):
+//   1. JITMEM_KNOWLEDGE_ROOT — direct override of KNOWLEDGE_ROOT (for tests
+//      and advanced users). Migrator is skipped.
+//   2. JITMEM_EXT_ROOT — extension-root override (existing test-only env var).
+//      KNOWLEDGE_ROOT is computed as ${EXT_ROOT}/knowledge so existing tests
+//      continue to operate on co-located data. Migrator is skipped.
+//   3. (production default) ${homedir()}/.copilot/jit-memory/knowledge/.
+//
+// A stderr warning fires whenever any override is active so it's never silent
+// in production.
 const _EXT_ROOT_OVERRIDE = process.env.JITMEM_EXT_ROOT
   ? resolve(process.env.JITMEM_EXT_ROOT)
+  : null;
+const _KNOWLEDGE_ROOT_OVERRIDE = process.env.JITMEM_KNOWLEDGE_ROOT
+  ? resolve(process.env.JITMEM_KNOWLEDGE_ROOT)
   : null;
 const _INSTRUCTIONS_OVERRIDE = process.env.JITMEM_INSTRUCTIONS_MD
   ? resolve(process.env.JITMEM_INSTRUCTIONS_MD)
   : null;
-if (_EXT_ROOT_OVERRIDE || _INSTRUCTIONS_OVERRIDE) {
+if (_EXT_ROOT_OVERRIDE || _KNOWLEDGE_ROOT_OVERRIDE || _INSTRUCTIONS_OVERRIDE) {
   // stderr is safe — the SDK only reserves stdout for JSON-RPC.
   process.stderr.write(
     `[jit-memory] WARNING: path overrides active ` +
     `(JITMEM_EXT_ROOT=${_EXT_ROOT_OVERRIDE ?? "<unset>"}, ` +
+    `JITMEM_KNOWLEDGE_ROOT=${_KNOWLEDGE_ROOT_OVERRIDE ?? "<unset>"}, ` +
     `JITMEM_INSTRUCTIONS_MD=${_INSTRUCTIONS_OVERRIDE ?? "<unset>"}). ` +
     `These are test-only — unset them in production environments.\n`
   );
 }
 
 export const EXT_ROOT       = _EXT_ROOT_OVERRIDE ?? resolve(__dirname, "..");
-export const KNOWLEDGE_ROOT = join(EXT_ROOT, "knowledge");
+
+// Production data root: ~/.copilot/jit-memory/.
+// Legacy data lived inside the extension folder.
+function _resolveKnowledgeRoot() {
+  if (_KNOWLEDGE_ROOT_OVERRIDE) return _KNOWLEDGE_ROOT_OVERRIDE;
+  if (_EXT_ROOT_OVERRIDE)       return join(_EXT_ROOT_OVERRIDE, "knowledge");
+  return join(homedir(), ".copilot", "jit-memory", "knowledge");
+}
+export const KNOWLEDGE_ROOT      = _resolveKnowledgeRoot();
+export const JITMEM_DATA_ROOT    = dirname(KNOWLEDGE_ROOT);
+export const LEGACY_KNOWLEDGE_ROOT = join(EXT_ROOT, "knowledge");
+
+// True when neither knowledge-root override is set, i.e. production resolution
+// is in effect and the migrator may run. The migrator MUST consult this; tests
+// using JITMEM_EXT_ROOT or JITMEM_KNOWLEDGE_ROOT do not perform migration.
+export const PATH_OVERRIDES_ACTIVE = !!(_EXT_ROOT_OVERRIDE || _KNOWLEDGE_ROOT_OVERRIDE);
+
 export const ARCHIVE_DIR    = join(KNOWLEDGE_ROOT, "_archive");
 export const PROTOCOLS_DIR  = join(KNOWLEDGE_ROOT, "protocols");
 
