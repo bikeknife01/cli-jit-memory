@@ -26,11 +26,11 @@ import { pickMarkerPair } from "./markers.mjs";
 import { scanRedactable } from "./redaction.mjs";
 
 export const QR_BEGIN = "<!-- QR:BEGIN -->";          // legacy, read-write supported
-export const QR_END   = "<!-- QR:END -->";            // legacy, read-write supported
+export const QR_END = "<!-- QR:END -->";            // legacy, read-write supported
 // Item #9: namespaced form is preferred for new installs to avoid
 // collisions with other extensions that might use generic QR:BEGIN.
 export const QR_BEGIN_NS = "<!-- jit-memory:QR:BEGIN -->";
-export const QR_END_NS   = "<!-- jit-memory:QR:END -->";
+export const QR_END_NS = "<!-- jit-memory:QR:END -->";
 const QR_CAP = 10;
 const QR_MAX_CHARS = 280;
 
@@ -58,7 +58,7 @@ const STATIC_FORBIDDEN_LABELS = new Set([
 ]);
 
 let dynamicForbiddenMarkers = [];
-let dynamicForbiddenLabels  = new Set();
+let dynamicForbiddenLabels = new Set();
 
 function isManagedMarkerComment(inner) {
   const trimmed = inner.trim();
@@ -100,14 +100,14 @@ export async function refreshForbiddenMarkers({ instructionsPath = INSTRUCTIONS_
   try {
     const content = await fs.readFile(instructionsPath, "utf8");
     dynamicForbiddenMarkers = discoverManagedMarkerComments(content);
-    dynamicForbiddenLabels  = new Set(
+    dynamicForbiddenLabels = new Set(
       dynamicForbiddenMarkers.map(markerInnerLabel).filter(Boolean)
     );
     return { ok: true, discoveredCount: dynamicForbiddenMarkers.length, markers: [...dynamicForbiddenMarkers] };
   } catch (e) {
     if (e?.code === "ENOENT") {
       dynamicForbiddenMarkers = [];
-      dynamicForbiddenLabels  = new Set();
+      dynamicForbiddenLabels = new Set();
       return {
         ok: false,
         discoveredCount: 0,
@@ -144,11 +144,11 @@ function findForbiddenMarker(s, dynamicMarkers = dynamicForbiddenMarkers, dynami
     const label = match[1].trim().toLowerCase();
     if (!label) continue;
     if (STATIC_FORBIDDEN_LABELS.has(label)) return match[0];
-    if (dynamicLabels.has(label))           return match[0];
+    if (dynamicLabels.has(label)) return match[0];
     // efficiency-retro markers may carry attributes after the label; guard
     // the prefix form too.
     if (label.startsWith("efficiency-retro:managed-start") ||
-        label.startsWith("efficiency-retro:managed-end")) return match[0];
+      label.startsWith("efficiency-retro:managed-end")) return match[0];
   }
   return null;
 }
@@ -193,7 +193,7 @@ async function runPostWriteSync() {
     invalidateRoutingCache();
     return { ok: true, kbStatus: r?.kbStatus ?? "unknown" };
   } catch (e) {
-    try { invalidateRoutingCache(); } catch {}
+    try { invalidateRoutingCache(); } catch { }
     return { ok: false, error: String(e?.message || e) };
   }
 }
@@ -240,13 +240,14 @@ export async function capture(args = {}) {
     return { status: "invalid", summary: `content contains a managed marker token (${marker}); refusing to capture` };
   }
   // Item #14: deterministic redaction scan. Block by default; allow override
-  // via `confirm_redaction_skip:true`. The scan checks `content` plus any
-  // string field the agent supplied (summary, etc.) so a leak in any field
-  // is surfaced.
+  // via `confirm_redaction_skip:true`. Scan ALL string fields (including new
+  // structured fields like failed_attempt and context) so a leak in any field
+  // is surfaced without needing to maintain an explicit field list.
   if (!args.confirm_redaction_skip) {
-    const fields = [args.content, args.summary, ...(Array.isArray(args.tags) ? args.tags : []), ...(Array.isArray(args.aliases) ? args.aliases : [])];
-    const all = fields.filter(s => typeof s === "string").join("\n");
-    const r = scanRedactable(all);
+    const allStrings = Object.values(args)
+      .flatMap(v => Array.isArray(v) ? v : [v])
+      .filter(s => typeof s === "string");
+    const r = scanRedactable(allStrings.join("\n"));
     if (r.findings.length > 0) {
       return {
         status: "needs_redaction",
@@ -259,11 +260,11 @@ export async function capture(args = {}) {
   // agent can retry instead of seeing a generic invalid result.
   try {
     switch (kind) {
-      case "quick_rule":    return await captureQuickRule(args);
-      case "domain_new":    return await captureDomainNew(args);
+      case "quick_rule": return await captureQuickRule(args);
+      case "domain_new": return await captureDomainNew(args);
       case "domain_update": return await captureDomainUpdate(args);
-      case "disputed":      return await captureDisputed(args);
-      case "alias_add":     return await captureAliasAdd(args);
+      case "disputed": return await captureDisputed(args);
+      case "alias_add": return await captureAliasAdd(args);
       default:
         return { status: "invalid", summary: `kind must be one of quick_rule|domain_new|domain_update|disputed|alias_add (got ${JSON.stringify(kind)})` };
     }
@@ -302,7 +303,7 @@ async function captureQuickRule({ content, demote_target }) {
   try { qrMeta = await loadQrMeta(); } catch { qrMeta = { rules: [] }; }
 
   let demotedRule = null;   // populated when an existing rule is removed by demote_target
-  let addedRule   = null;   // populated when ruleLine is appended
+  let addedRule = null;   // populated when ruleLine is appended
 
   const r = await casReplaceMarkers(INSTRUCTIONS_MD, qrPair.begin, qrPair.end, (_full, freshInner) => {
     const rows = freshInner.split("\n").map(l => l.trim());
@@ -409,7 +410,7 @@ async function captureQuickRule({ content, demote_target }) {
 }
 
 // ── domain_new ──────────────────────────────────────────────────────────────
-async function captureDomainNew({ content, domain, summary, tags, aliases = [], see_also = [], section, kind_meta }) {
+async function captureDomainNew({ content, domain, summary, tags, aliases = [], see_also = [], section, kind_meta, context, failed_attempt }) {
   const fileKind = kind_meta || "fact";
   const meta = {
     domain,
@@ -438,20 +439,38 @@ async function captureDomainNew({ content, domain, summary, tags, aliases = [], 
   }
 
   const sectionHeader = pickSectionHeader(section);
-  const body = [
+  const bodyLines = [
     `# ${titleCase(domain)}`,
     "",
     summary,
-    "",
+    ""
+  ];
+  // Structured field: context — when/why this lesson applies.
+  if (context && typeof context === "string" && context.trim()) {
+    bodyLines.push(`_${context.trim()}_`, "");
+  }
+  bodyLines.push(
     `## ${sectionHeader}`,
     "",
     `- ${content.trim()}`,
-    "",
+    ""
+  );
+  // Structured field: failed_attempt — what was tried and didn't work.
+  if (failed_attempt && typeof failed_attempt === "string" && failed_attempt.trim()) {
+    bodyLines.push(
+      `## ${pickSectionHeader("broken")}`,
+      "",
+      `- ${failed_attempt.trim()}`,
+      ""
+    );
+  }
+  bodyLines.push(
     "## Disputed",
     "",
     "<!-- Append-only. Format: `- [YYYY-MM-DD] tried X — got Y — workaround: Z` -->",
     ""
-  ].join("\n");
+  );
+  const body = bodyLines.join("\n");
 
   // Existence check + write inside the same lock. Without this, two concurrent
   // domain_new calls for the same slug both pass the existence check and one
@@ -476,7 +495,7 @@ async function captureDomainNew({ content, domain, summary, tags, aliases = [], 
 }
 
 // ── domain_update ───────────────────────────────────────────────────────────
-async function captureDomainUpdate({ content, domain, section = "working" }) {
+async function captureDomainUpdate({ content, domain, section = "working", failed_attempt }) {
   if (!isValidSlug(domain)) return { status: "invalid", summary: `invalid domain slug: ${domain}` };
   const target = resolveDomainFile(domain);
   {
@@ -497,35 +516,82 @@ async function captureDomainUpdate({ content, domain, section = "working" }) {
     catch (e) { return { status: "invalid_setup", summary: `frontmatter parse: ${e.message}` }; }
 
     const header = pickSectionHeader(section);
-    const body = parsed.body;
+    let body = parsed.body;
     const sectionRe = new RegExp(`(##\\s+${escapeRegex(header)}[^\\n]*\\n)([\\s\\S]*?)(?=\\n##\\s|$)`);
     const m = sectionRe.exec(body);
-    // Idempotency (item #4): if the section already contains a bullet whose
-    // normalized content matches the incoming line, no-op.
+    // Idempotency (item #4): track whether the content bullet is a dup so we
+    // can still process failed_attempt even when content itself is unchanged.
+    let contentChanged = true;
     if (m) {
       const incomingNorm = content.trim().toLowerCase();
       const isDup = m[2].split("\n").some(l => {
         const c = bulletContent(l);
         return c && c.toLowerCase() === incomingNorm;
       });
-      if (isDup) {
-        return { status: "ok", unchanged: true, summary: `Already present in ## ${header} of ${domain}.md; no change`, file: target };
-      }
+      if (isDup) contentChanged = false;
     }
     let nextBody;
-    if (m) {
-      nextBody = body.slice(0, m.index + m[1].length) +
-                 (m[2].endsWith("\n") ? m[2] : m[2] + "\n") +
-                 `- ${content.trim()}\n` +
-                 body.slice(m.index + m[0].length);
+    if (contentChanged) {
+      if (m) {
+        nextBody = body.slice(0, m.index + m[1].length) +
+          (m[2].endsWith("\n") ? m[2] : m[2] + "\n") +
+          `- ${content.trim()}\n` +
+          body.slice(m.index + m[0].length);
+      } else {
+        nextBody = body.replace(/\s*$/, "\n") + `\n## ${header}\n\n- ${content.trim()}\n`;
+      }
     } else {
-      nextBody = body.replace(/\s*$/, "\n") + `\n## ${header}\n\n- ${content.trim()}\n`;
+      nextBody = body;
     }
+
+    // Structured field: failed_attempt — also append to the broken section in
+    // the same atomic write so the two updates are never split across files.
+    let addedFailedAttempt = false;
+    if (failed_attempt && typeof failed_attempt === "string" && failed_attempt.trim()) {
+      const brokenHeader = pickSectionHeader("broken");
+      const brokenRe = new RegExp(`(##\\s+${escapeRegex(brokenHeader)}[^\\n]*\\n)([\\s\\S]*?)(?=\\n##\\s|$)`);
+      const bm = brokenRe.exec(nextBody);
+      if (bm) {
+        // Idempotency: skip if bullet already present in Broken section.
+        const failedNorm = failed_attempt.trim().toLowerCase();
+        const alreadyPresent = bm[2].split("\n").some(l => {
+          const c = bulletContent(l);
+          return c && c.toLowerCase() === failedNorm;
+        });
+        if (!alreadyPresent) {
+          nextBody = nextBody.slice(0, bm.index + bm[1].length) +
+            (bm[2].endsWith("\n") ? bm[2] : bm[2] + "\n") +
+            `- ${failed_attempt.trim()}\n` +
+            nextBody.slice(bm.index + bm[0].length);
+          addedFailedAttempt = true;
+        }
+      } else {
+        // Insert broken section before ## Disputed (or at end).
+        const dispIdx = /\n##\s+Disputed/i.exec(nextBody)?.index ?? -1;
+        if (dispIdx >= 0) {
+          nextBody = nextBody.slice(0, dispIdx) +
+            `\n\n## ${brokenHeader}\n\n- ${failed_attempt.trim()}\n` +
+            nextBody.slice(dispIdx);
+        } else {
+          nextBody = nextBody.replace(/\s*$/, "\n") + `\n## ${brokenHeader}\n\n- ${failed_attempt.trim()}\n`;
+        }
+        addedFailedAttempt = true;
+      }
+    }
+
+    // If nothing changed at all, return unchanged without a write.
+    if (!contentChanged && !addedFailedAttempt) {
+      return { status: "ok", unchanged: true, summary: `Already present in ## ${header} of ${domain}.md; no change`, file: target };
+    }
+
     const nextMeta = { ...parsed.meta, verified: today() };
     const v = validateMeta(nextMeta);
     if (!v.ok) return { status: "invalid_setup", summary: `frontmatter validate (manual repair required): ${v.errors.join("; ")}` };
     await atomicWrite(target, stringify(nextMeta, nextBody));
-    return { status: "ok", summary: `Appended to ## ${header} in ${domain}.md`, file: target };
+    const parts = [];
+    if (contentChanged) parts.push(`Appended to ## ${header} in ${domain}.md`);
+    if (addedFailedAttempt) parts.push("also added failed_attempt to broken section");
+    return { status: "ok", summary: parts.join("; "), file: target };
   });
 
   if (result.status !== "ok") return result;
@@ -622,7 +688,7 @@ async function captureAliasAdd({ content, domain, tags = [], aliases = [] }) {
     const existingTags = meta.tags || [];
     const existingAliases = meta.aliases || [];
     const beforeTags = new Set(existingTags);
-    const beforeAls  = new Set(existingAliases);
+    const beforeAls = new Set(existingAliases);
     const mergedTags = new Set(existingTags);
     const mergedAliases = new Set(existingAliases);
     for (const t of requested.tags) mergedTags.add(t);
@@ -671,7 +737,7 @@ async function captureAliasAdd({ content, domain, tags = [], aliases = [] }) {
       status: "ok",
       summary: `Updated ${domain}.md (tags=${nextMeta.tags.length}, aliases=${nextMeta.aliases.length})`,
       file: target,
-      note: content.trim() ? `context: ${content.trim().slice(0,140)}` : undefined
+      note: content.trim() ? `context: ${content.trim().slice(0, 140)}` : undefined
     };
   });
 
@@ -687,7 +753,7 @@ function pickSectionHeader(s) {
     case "broken": return "❌ Broken / Don't try";
     case "gotcha": return "⚠️ Gotchas";
     case "working":
-    default:       return "✅ Working";
+    default: return "✅ Working";
   }
 }
 
@@ -804,14 +870,14 @@ export async function previewCapture({ kind, domain, tags = [], aliases = [] } =
     } catch { /* file does not exist — fine */ }
   }
   // Tag/alias overlap with the routing table.
-  const tagSet   = new Set((Array.isArray(tags)    ? tags    : []).filter(t => typeof t === "string"));
+  const tagSet = new Set((Array.isArray(tags) ? tags : []).filter(t => typeof t === "string"));
   const aliasSet = new Set((Array.isArray(aliases) ? aliases : []).filter(a => typeof a === "string").map(a => a.toLowerCase()));
   if (tagSet.size > 0 || aliasSet.size > 0) {
     let table;
     try { table = await loadRouting(); } catch { table = null; }
     for (const e of table?.domains || []) {
       if (e.deprecated) continue;
-      const sharedTags    = (e.tags    || []).filter(t => tagSet.has(t));
+      const sharedTags = (e.tags || []).filter(t => tagSet.has(t));
       const sharedAliases = (e.aliases || []).filter(a => aliasSet.has(String(a).toLowerCase()));
       if (sharedTags.length === 0 && sharedAliases.length === 0) continue;
       // Skip slug-matched entry (already added).
@@ -827,10 +893,10 @@ export async function previewCapture({ kind, domain, tags = [], aliases = [] } =
   // Disambiguation hint for the agent.
   const slugHit = candidates.find(c => c.source === "slug");
   let suggestedKind;
-  if (slugHit)                        suggestedKind = "domain_update";
+  if (slugHit) suggestedKind = "domain_update";
   else if (candidates.length > 0 && (kind === "domain_new" || !kind))
-                                      suggestedKind = "alias_add";
-  else                                suggestedKind = kind || "domain_new";
+    suggestedKind = "alias_add";
+  else suggestedKind = kind || "domain_new";
   return { status: "ok", candidates, suggestedKind };
 }
 // Mark a domain file's frontmatter as deprecated:<today>. The router skips
@@ -940,7 +1006,7 @@ export async function status() {
     status: "ok",
     knowledgeRoot: KNOWLEDGE_ROOT,
     routing: { exists: false, ageHours: null, domainCount: 0 },
-    usage:   { exists: false, totalDomains: 0, totalHits: 0 },
+    usage: { exists: false, totalDomains: 0, totalHits: 0 },
     migration: migrationLastResult(),
     blocked: isMigrationBlocked(),
     issues: []
@@ -959,7 +1025,7 @@ export async function status() {
     const u = JSON.parse(raw);
     out.usage.exists = true;
     out.usage.totalDomains = Object.keys(u.domains || {}).length;
-    out.usage.totalHits    = Object.values(u.domains || {}).reduce((a, v) => a + (Number.isFinite(v?.hits) ? v.hits : 0), 0);
+    out.usage.totalHits = Object.values(u.domains || {}).reduce((a, v) => a + (Number.isFinite(v?.hits) ? v.hits : 0), 0);
   } catch (e) {
     if (e.code !== "ENOENT") out.issues.push(`usage read error: ${e.message}`);
   }

@@ -10,6 +10,12 @@ each prompt and captures new ones via tool calls.
 > sensitive personal details.** A deterministic redaction scan blocks the
 > obvious cases at capture time, but you are the final line of defense.
 
+> **Trust boundary.** Knowledge files in `~/.copilot/jit-memory/knowledge/`
+> are injected verbatim into your Copilot prompts. **Treat them like code you
+> would run.** Do not import, sync, commit, or share them with others without
+> review — a maliciously crafted knowledge file could manipulate Copilot's
+> behavior for anyone whose prompt it gets injected into.
+
 ## Should I install this?
 
 Install if you use Copilot CLI a lot and find yourself repeatedly explaining
@@ -92,6 +98,8 @@ exact path you need to inspect — read paths are unaffected.
 - **Routes deterministically** before every prompt via `onUserPromptSubmitted`
   — matches user intent against tags/aliases in the generated routing register
   and injects matched files as hidden context (≤4 KB hard cap). No LLM tag-scanning.
+  Multi-word aliases match as substrings; single-word aliases use word-boundary
+  semantics (so `"app"` matches in `"my app"` but not inside `"happy"`).
 - **Captures lessons atomically** via the `jit_memory_capture` tool. The agent
   calls this when it sees a lesson that could plausibly recur. The user is
   consulted only for ambiguity, contradiction, Quick Rule demotion at cap,
@@ -179,6 +187,27 @@ edits (a deliberate "this lesson was just confirmed correct" signal).
 `fs.promises.rename` for atomicity, `fs.open(<lock>, "wx")` for advisory
 locking, same-directory temp files, EPERM/EACCES retry for Windows AV.
 
+**Development / running tests.** Run `npm test` from inside the `jit-memory/`
+folder. On Windows, concurrent test workers may race on lock files; run tests
+serially if you see intermittent failures:
+```
+node --test --test-concurrency=1
+```
+
+### Redaction examples
+
+The capture tool blocks content that matches any of these patterns (non-exhaustive):
+
+| Category | Example blocked input |
+|---|---|
+| GitHub / generic bearer tokens | `ghp_AAAA...`, `Bearer eyJ...` |
+| Private hostname TLDs | `server.internal`, `host.corp`, `box.lan` |
+| Connection-string credentials | `Password=hunter2`, `AccountKey=AAAA...` |
+| AWS / Azure keys | `AKIA...`, `DefaultEndpointsProtocol=...` |
+| High-entropy strings | Long random-looking base64/hex blobs |
+
+To bypass for a known-safe string (e.g. a generated slug that looks like a token): pass `confirm_redaction_skip: true` after reviewing the content manually.
+
 ### Capture flow (agent's side)
 
 When the agent identifies a lesson that could plausibly recur:
@@ -236,4 +265,4 @@ step.
 
 ## License / status
 
-Authoring template — adapt freely.
+Open for personal use and adaptation.

@@ -6,6 +6,12 @@
 > personal details.** The extension also runs a deterministic redaction scan
 > at capture time, but you are the final line of defense.
 
+> **Trust boundary.** Knowledge files are injected verbatim into your Copilot
+> prompts. **Treat them like code you would run.** Do not import, sync, commit,
+> or share them with others without review — a maliciously crafted knowledge
+> file could manipulate Copilot's behavior for anyone whose prompt it gets
+> injected into.
+
 ## Quickstart (5 minutes, non-technical)
 
 If you just want it working:
@@ -299,10 +305,12 @@ Open the file and ensure exactly one matching pair, with BEGIN before END.
 require manual repair.
 
 **Routing matches the wrong file.**
-Tag substring matching uses word boundaries (`\b<tag>\b`). Aliases use plain
-substring (≥3 chars). If a tag is too generic, edit the domain file's
-frontmatter to make it more specific or call `jit_memory_capture` with
-`kind: "alias_add"` to add a more specific alias.
+Tag substring matching uses word boundaries (`\b<tag>\b`). Multi-word aliases
+(e.g., `"send an email"`) use plain substring matching. Single-word aliases
+use word-boundary matching — `"email"` matches in `"my email setup"` but not
+inside `"emailer"`. All aliases must be at least 3 characters. If a tag is too
+generic, edit the domain file's frontmatter to make it more specific or call
+`jit_memory_capture` with `kind: "alias_add"` to add a more specific alias.
 Tags must be 2-40 characters; if you upgrade from an older build that allowed
 one-character tags, edit those tags to longer values so the files continue to
 route.

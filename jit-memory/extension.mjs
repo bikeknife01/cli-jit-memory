@@ -16,14 +16,14 @@ import { promises as fs } from "node:fs";
 import { routeFromDisk, loadRouting, consumeInvalidEntryCount } from "./lib/router.mjs";
 import { assembleContext } from "./lib/context.mjs";
 import { capture as doCapture, debugRoute, refreshForbiddenMarkers, deprecate as doDeprecate, deleteDomain as doDelete, previewCapture as doPreview, status as doStatus } from "./lib/capture.mjs";
-import { audit as doAudit }      from "./lib/audit.mjs";
-import { UsageTracker }          from "./lib/usage.mjs";
-import { DIGEST_MD }             from "./lib/paths.mjs";
-import { ensureMarkers }         from "./lib/bootstrap.mjs";
-import { detectDrift }           from "./lib/drift.mjs";
+import { audit as doAudit } from "./lib/audit.mjs";
+import { UsageTracker } from "./lib/usage.mjs";
+import { DIGEST_MD } from "./lib/paths.mjs";
+import { ensureMarkers } from "./lib/bootstrap.mjs";
+import { detectDrift } from "./lib/drift.mjs";
 import { syncNow, drainSync, requestSync } from "./lib/sync.mjs";
-import { logEvent }              from "./lib/jitlog.mjs";
-import { withTimeout }           from "./lib/timeout.mjs";
+import { logEvent } from "./lib/jitlog.mjs";
+import { withTimeout } from "./lib/timeout.mjs";
 import { truncateUtf8AtLineBoundary } from "./lib/utf8.mjs";
 import {
   migrateKnowledgeIfNeeded, migrationReady, isMigrationBlocked, migrationLastResult
@@ -36,7 +36,7 @@ const PRE_SESSION_WARN_LIMIT = 20;
 // ── throttled session.log helper ────────────────────────────────────────────
 function warnToSession(session, msg) {
   try { session.log(`jit-memory: ${msg}`, { level: "warning", ephemeral: true }); }
-  catch {}
+  catch { }
 }
 
 function makeThrottledWarn(session, intervalMs = 5 * 60 * 1000) {
@@ -136,15 +136,17 @@ const CAPTURE_SCHEMA = {
         "disputed: append contradiction to ## Disputed (requires domain). " +
         "alias_add: add tag/alias so future routing matches (requires domain, tags or aliases)."
     },
-    content:       { type: "string", description: "The lesson, ideally '<topic>: <what fails> → <what works>'. For quick_rule, ≤280 chars." },
-    domain:        { type: "string", description: "Slug ^[a-z0-9][a-z0-9_-]{0,63}$. Required for all kinds except quick_rule." },
-    summary:       { type: "string", description: "≤200 chars. Required for domain_new." },
-    tags:          { type: "array",  items: { type: "string" }, description: "1–12 lowercase tokens, each 2–40 chars. Required for domain_new; for alias_add, supply tags and/or aliases." },
-    aliases:       { type: "array",  items: { type: "string" }, description: "0–8 multi-word phrases (3–40 chars each). For alias_add, supply tags and/or aliases." },
-    see_also:      { type: "array",  items: { type: "string" }, description: "0–4 related domain slugs." },
-    section:       { type: "string", enum: ["working", "broken", "gotcha"], description: "Required for domain_update." },
+    content: { type: "string", description: "The lesson, ideally '<topic>: <what fails> → <what works>'. For quick_rule, ≤280 chars." },
+    domain: { type: "string", description: "Slug ^[a-z0-9][a-z0-9_-]{0,63}$. Required for all kinds except quick_rule." },
+    summary: { type: "string", description: "≤200 chars. Required for domain_new." },
+    tags: { type: "array", items: { type: "string" }, description: "1–12 lowercase tokens, each 2–40 chars. Required for domain_new; for alias_add, supply tags and/or aliases." },
+    aliases: { type: "array", items: { type: "string" }, description: "0–8 multi-word phrases (3–40 chars each). For alias_add, supply tags and/or aliases." },
+    see_also: { type: "array", items: { type: "string" }, description: "0–4 related domain slugs." },
+    section: { type: "string", enum: ["working", "broken", "gotcha"], description: "Required for domain_update." },
     demote_target: { type: "string", description: "If kind=quick_rule and at_cap, substring of an existing rule to remove." },
-    kind_meta:     { type: "string", enum: ["fact", "protocol", "reference"], description: "Optional. Default 'fact'. Used only for domain_new." },
+    kind_meta: { type: "string", enum: ["fact", "protocol", "reference"], description: "Optional. Default 'fact'. Used only for domain_new." },
+    context: { type: "string", description: "Optional. When/why this lesson applies (e.g. 'Windows only', 'production deployments'). Rendered as an italicized prefatory note in the domain file. Used for domain_new." },
+    failed_attempt: { type: "string", description: "Optional. What was tried and didn't work — rendered into the '❌ Broken / Don't try' section alongside the working lesson. Used for domain_new and domain_update." },
     confirm_redaction_skip: { type: "boolean", description: "If true, bypass the deterministic redaction scan. Use only after manual review (item #14)." }
   },
   required: ["kind", "content"]
@@ -172,17 +174,17 @@ const DEPRECATE_SCHEMA = {
 const PREVIEW_SCHEMA = {
   type: "object",
   properties: {
-    kind:    { type: "string", enum: ["quick_rule","domain_new","domain_update","disputed","alias_add"], description: "Optional. Tentative kind being considered." },
-    domain:  { type: "string", description: "Slug to check for an existing domain file." },
-    tags:    { type: "array",  items: { type: "string" }, description: "Tags to check for overlap with existing domains." },
-    aliases: { type: "array",  items: { type: "string" }, description: "Aliases to check for overlap with existing domains." }
+    kind: { type: "string", enum: ["quick_rule", "domain_new", "domain_update", "disputed", "alias_add"], description: "Optional. Tentative kind being considered." },
+    domain: { type: "string", description: "Slug to check for an existing domain file." },
+    tags: { type: "array", items: { type: "string" }, description: "Tags to check for overlap with existing domains." },
+    aliases: { type: "array", items: { type: "string" }, description: "Aliases to check for overlap with existing domains." }
   }
 };
 
 const DELETE_SCHEMA = {
   type: "object",
   properties: {
-    domain:  { type: "string",  description: "Slug of the domain to retire by moving to knowledge/_archive/." },
+    domain: { type: "string", description: "Slug of the domain to retire by moving to knowledge/_archive/." },
     confirm: { type: "boolean", description: "Must be true to actually move the file. Without confirm, returns a needs_confirm preview." }
   },
   required: ["domain"]
@@ -219,13 +221,13 @@ function formatDriftReasons(reasons = []) {
 // (e.g. a corrupt _routing.json) writes one log line, then suppresses
 // duplicates until either 5 minutes pass or the failure signature changes.
 let _lastRouteFailSig = null;
-let _lastRouteFailAt  = 0;
+let _lastRouteFailAt = 0;
 function noteRouteFailure(err) {
   const sig = `${err?.code || "ERROR"}:${(err?.message || String(err)).slice(0, 100)}`;
   const now = Date.now();
   if (sig === _lastRouteFailSig && now - _lastRouteFailAt < 5 * 60 * 1000) return;
   _lastRouteFailSig = sig;
-  _lastRouteFailAt  = now;
+  _lastRouteFailAt = now;
   // Fire-and-forget; logEvent never throws.
   void logEvent("route_failed", { code: err?.code, error: err?.message || String(err) });
 }
@@ -247,21 +249,21 @@ function gateOnReady(handler, { write = false } = {}) {
     if (write && r?.status === "migration_in_progress") {
       try { r = await migrateKnowledgeIfNeeded(); } catch { /* swallowed; r unchanged */ }
     }
-    try { await markersReady; }     catch { /* ensureMarkers never throws; defensive */ }
+    try { await markersReady; } catch { /* ensureMarkers never throws; defensive */ }
     if (write && isMigrationBlocked()) {
       r = migrationLastResult() || { status: "error" };
       const stagingNote = r.staging ? ` (your data is in ${r.staging})` : "";
       const detail = r.status === "collision"
-          ? `both legacy (${r.legacy}) and new (${r.new}) knowledge roots contain user data; merge manually then restart`
+        ? `both legacy (${r.legacy}) and new (${r.new}) knowledge roots contain user data; merge manually then restart`
         : r.status === "staging_present"
           ? `unresolved migration staging directories present: ${(r.paths || []).join(", ")}; resolve manually then restart`
-        : r.status === "verify_failed"
-          ? `migration verification failed: ${r.details || "unknown"}${stagingNote}; resolve manually then restart`
-        : r.status === "race_aborted"
-          ? `migration was aborted by a concurrent write; staging at ${r.staging || "<unknown>"}; resolve manually then restart`
-        : r.status === "unsupported_topology"
-          ? `unsupported topology (symlink) at ${r.path || "<unknown>"}${stagingNote}; replace with a real directory then restart`
-        : `migration failed: ${r.error || r.status}${stagingNote}`;
+          : r.status === "verify_failed"
+            ? `migration verification failed: ${r.details || "unknown"}${stagingNote}; resolve manually then restart`
+            : r.status === "race_aborted"
+              ? `migration was aborted by a concurrent write; staging at ${r.staging || "<unknown>"}; resolve manually then restart`
+              : r.status === "unsupported_topology"
+                ? `unsupported topology (symlink) at ${r.path || "<unknown>"}${stagingNote}; replace with a real directory then restart`
+                : `migration failed: ${r.error || r.status}${stagingNote}`;
       return { status: "invalid_setup", summary: `jit-memory migration unresolved: ${detail}` };
     }
     if (write && r?.status === "migration_in_progress") {
@@ -349,10 +351,10 @@ const hooks = {
           .then(r => ({ ok: true, ...r }))
           .catch(e => ({ ok: false, error: e?.message || String(e) }));
         await logEvent("drift_heal", {
-          reasons:        drift.reasons,
-          sync:           result.ok ? "ok" : "failed",
-          error:          result.error,
-          kbStatus:       result.kbStatus,
+          reasons: drift.reasons,
+          sync: result.ok ? "ok" : "failed",
+          error: result.error,
+          kbStatus: result.kbStatus,
           domainsWritten: result.domainsWritten,
           routingWritten: result.routingWritten
         });
@@ -409,9 +411,9 @@ const hooks = {
     } catch { /* best-effort */ }
     if (!digest && !healthBlock && !driftBlock) return undefined;
     const parts = [];
-    if (digest)      parts.push(`<jit-memory-digest>\n${digest}\n</jit-memory-digest>`);
+    if (digest) parts.push(`<jit-memory-digest>\n${digest}\n</jit-memory-digest>`);
     if (healthBlock) parts.push(healthBlock);
-    if (driftBlock)  parts.push(driftBlock);
+    if (driftBlock) parts.push(driftBlock);
     return { additionalContext: parts.join("\n") };
   }),
 

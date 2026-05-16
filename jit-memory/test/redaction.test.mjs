@@ -77,3 +77,67 @@ test("capture override: confirm_redaction_skip:true bypasses the scan", async ()
   });
   assert.equal(r.status, "ok");
 });
+
+test("scanRedactable: connection-string Password= detected", () => {
+  const r = scanRedactable("Server=myhost;Database=mydb;Password=S3cr3tP@ssword!;Trusted_Connection=False;");
+  assert.ok(r.findings.find(f => f.kind === "conn-string-password"), `expected conn-string-password; got ${JSON.stringify(r.findings)}`);
+});
+
+test("scanRedactable: connection-string Pwd= detected", () => {
+  const r = scanRedactable("mongodb://user:pass@host/db?Pwd=my-secret-pw-123");
+  assert.ok(r.findings.find(f => f.kind === "conn-string-password"), `expected conn-string-password; got ${JSON.stringify(r.findings)}`);
+});
+
+test("scanRedactable: AccountKey= detected", () => {
+  const r = scanRedactable("DefaultEndpointsProtocol=https;AccountName=mystorageacct;AccountKey=abc123def456ghi789jkl0mno;EndpointSuffix=core.windows.net");
+  assert.ok(r.findings.find(f => f.kind === "conn-string-key"), `expected conn-string-key; got ${JSON.stringify(r.findings)}`);
+});
+
+test("scanRedactable: SharedAccessKey= detected", () => {
+  const r = scanRedactable("Endpoint=sb://myns.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=xyzAbcDef123456789");
+  assert.ok(r.findings.find(f => f.kind === "conn-string-key"), `expected conn-string-key; got ${JSON.stringify(r.findings)}`);
+});
+
+test("scanRedactable: Password=<placeholder> is NOT flagged (doc-style)", () => {
+  const r = scanRedactable("Set Password=<your-password> in the config");
+  assert.ok(!r.findings.find(f => f.kind === "conn-string-password"), `should not flag placeholder; got ${JSON.stringify(r.findings)}`);
+});
+
+test("scanRedactable: internal hostname (.internal) detected", () => {
+  const r = scanRedactable("connect to redis.internal:6379 for caching");
+  assert.ok(r.findings.find(f => f.kind === "internal-hostname"), `expected internal-hostname; got ${JSON.stringify(r.findings)}`);
+});
+
+test("scanRedactable: internal hostname (.corp) detected", () => {
+  const r = scanRedactable("the deploy target is api-gateway.corp");
+  assert.ok(r.findings.find(f => f.kind === "internal-hostname"), `expected internal-hostname; got ${JSON.stringify(r.findings)}`);
+});
+
+test("scanRedactable: mDNS hostname (.local) detected", () => {
+  const r = scanRedactable("postgres is running on db-server.local");
+  assert.ok(r.findings.find(f => f.kind === "internal-hostname"), `expected internal-hostname; got ${JSON.stringify(r.findings)}`);
+});
+
+test("scanRedactable: plain word 'local' is NOT flagged as internal-hostname", () => {
+  const r = scanRedactable("run this in a local dev environment, not production");
+  assert.ok(!r.findings.find(f => f.kind === "internal-hostname"), `should not flag bare 'local'; got ${JSON.stringify(r.findings)}`);
+});
+
+test("scanRedactable: 'localhost' is NOT flagged as internal-hostname", () => {
+  const r = scanRedactable("connect to localhost:5432 for local Postgres");
+  assert.ok(!r.findings.find(f => f.kind === "internal-hostname"), `should not flag localhost; got ${JSON.stringify(r.findings)}`);
+});
+
+test("scanRedactable: internal hostname uppercase TLD (.INTERNAL) is detected", () => {
+  const r = scanRedactable("connect to redis.INTERNAL for caching");
+  assert.ok(r.findings.find(f => f.kind === "internal-hostname"), `expected internal-hostname for uppercase; got ${JSON.stringify(r.findings)}`);
+});
+
+test("scanRedactable: long Password= value is NOT double-reported as high-entropy-string", () => {
+  const longPwd = "Password=xK9mP2qR5tN8wJ3vA6hL1cE4fB7sD0y";
+  const r = scanRedactable(longPwd);
+  const pwdFindings = r.findings.filter(f => f.kind === "conn-string-password");
+  const entropyFindings = r.findings.filter(f => f.kind === "high-entropy-string");
+  assert.equal(pwdFindings.length, 1, `expected exactly 1 conn-string-password; got ${JSON.stringify(r.findings)}`);
+  assert.equal(entropyFindings.length, 0, `entropy scanner double-reported the password value; got ${JSON.stringify(r.findings)}`);
+});

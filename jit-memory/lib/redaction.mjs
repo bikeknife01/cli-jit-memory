@@ -11,25 +11,33 @@
 
 const PATTERNS = [
   // Well-known secret prefixes
-  { kind: "github-token",        re: /\b(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}\b/g },
-  { kind: "github-app-jwt",      re: /\beyJ[A-Za-z0-9._-]{20,}\b/g },
-  { kind: "openai-key",          re: /\bsk-[A-Za-z0-9]{20,}\b/g },
-  { kind: "stripe-live-key",     re: /\b(sk|pk|rk)_live_[A-Za-z0-9]{16,}\b/g },
-  { kind: "aws-access-key",      re: /\bAKIA[0-9A-Z]{16}\b/g },
-  { kind: "slack-bot-token",     re: /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g },
-  { kind: "google-api-key",      re: /\bAIza[0-9A-Za-z_-]{30,}\b/g },
-  { kind: "azure-shared-key",    re: /\b[A-Za-z0-9+/]{43}=\b/g, label: "base64 88-bit shared key" },
-  { kind: "private-key-block",   re: /-----BEGIN (?:RSA |EC |OPENSSH |ENCRYPTED |DSA |PGP )?PRIVATE KEY-----/g },
-  { kind: "bearer-header",       re: /\bBearer\s+[A-Za-z0-9._~+/=-]{20,}\b/g },
+  { kind: "github-token", re: /\b(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}\b/g },
+  { kind: "github-app-jwt", re: /\beyJ[A-Za-z0-9._-]{20,}\b/g },
+  { kind: "openai-key", re: /\bsk-[A-Za-z0-9]{20,}\b/g },
+  { kind: "stripe-live-key", re: /\b(sk|pk|rk)_live_[A-Za-z0-9]{16,}\b/g },
+  { kind: "aws-access-key", re: /\bAKIA[0-9A-Z]{16}\b/g },
+  { kind: "slack-bot-token", re: /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g },
+  { kind: "google-api-key", re: /\bAIza[0-9A-Za-z_-]{30,}\b/g },
+  { kind: "azure-shared-key", re: /\b[A-Za-z0-9+/]{43}=\b/g, label: "base64 88-bit shared key" },
+  { kind: "private-key-block", re: /-----BEGIN (?:RSA |EC |OPENSSH |ENCRYPTED |DSA |PGP )?PRIVATE KEY-----/g },
+  { kind: "bearer-header", re: /\bBearer\s+[A-Za-z0-9._~+/=-]{20,}\b/g },
 
   // Network identifiers
-  { kind: "ipv4-private",        re: /\b(?:10|127|169\.254|172\.(?:1[6-9]|2\d|3[01])|192\.168)\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/g },
-  { kind: "ipv6-link-local",     re: /\bfe80::[A-Fa-f0-9:]+\b/g },
+  { kind: "ipv4-private", re: /\b(?:10|127|169\.254|172\.(?:1[6-9]|2\d|3[01])|192\.168)\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/g },
+  { kind: "ipv6-link-local", re: /\bfe80::[A-Fa-f0-9:]+\b/g },
+  // Internal/private hostnames (.local=mDNS, .corp/.internal/.intranet/.lan=VPN/intranet).
+  // Case-insensitive since DNS names are case-insensitive.
+  { kind: "internal-hostname", re: /\b[a-zA-Z0-9][a-zA-Z0-9-]*\.(?:internal|corp|intranet|lan|local)\b/gi },
+
+  // Connection-string credentials (SQL Server, Azure Storage, and similar formats).
+  // Excludes documentation placeholders like Password=<your-password>.
+  { kind: "conn-string-password", re: /\b(?:Password|Pwd)=(?!<)[^;\s"'`]{3,}/gi },
+  { kind: "conn-string-key", re: /\b(?:AccountKey|SharedAccessKey|AccessKey)=(?!<)[^;\s"'`]{3,}/gi },
 
   // Absolute user paths (likely to leak username/repo layout)
-  { kind: "windows-user-path",   re: /\b[A-Za-z]:\\Users\\[^\\\s"']+/g },
-  { kind: "mac-user-path",       re: /\/Users\/[A-Za-z0-9_.-]+/g },
-  { kind: "linux-home-path",     re: /\/home\/[A-Za-z0-9_.-]+/g }
+  { kind: "windows-user-path", re: /\b[A-Za-z]:\\Users\\[^\\\s"']+/g },
+  { kind: "mac-user-path", re: /\/Users\/[A-Za-z0-9_.-]+/g },
+  { kind: "linux-home-path", re: /\/home\/[A-Za-z0-9_.-]+/g }
 ];
 
 // High-entropy / long hex string heuristic (>=32 hex chars). This is a
@@ -53,16 +61,23 @@ function looksLikeRandomToken(s, minDistinct = 8) {
 export function scanRedactable(text) {
   if (typeof text !== "string" || text.length === 0) return { findings: [] };
   const findings = [];
+  // Track byte spans of named-pattern matches so the entropy fallback can
+  // skip matches that fall inside an already-named span. This prevents
+  // double-reporting: e.g. "Password=abc123..." is caught as conn-string-password
+  // while the value "abc123..." (a different start index) would also be
+  // caught by high-entropy-string without this check.
+  const namedSpans = [];
   for (const p of PATTERNS) {
     p.re.lastIndex = 0;
     let m;
     while ((m = p.re.exec(text)) !== null) {
       findings.push({ kind: p.kind, snippet: clip(m[0]) });
+      namedSpans.push({ start: m.index, end: m.index + m[0].length });
       if (m.index === p.re.lastIndex) p.re.lastIndex++;
     }
   }
-  // Generic high-entropy fallback. Skip strings already matched by a named
-  // pattern at the same offset, and skip low-entropy runs (repeated chars).
+  // Generic high-entropy fallback. Skip strings that overlap with any named
+  // pattern span (not just same-start-index), and skip low-entropy runs.
   const seenSpans = new Set();
   for (const re of [HEX_RE, BASE64_LIKE_RE]) {
     re.lastIndex = 0;
@@ -72,8 +87,8 @@ export function scanRedactable(text) {
       if (seenSpans.has(key)) continue;
       seenSpans.add(key);
       if (!looksLikeRandomToken(m[0])) continue;            // skip "xxxx..." style
-      // Skip if already captured by a named pattern (same start index).
-      if (findings.some(f => text.indexOf(f.snippet.replace(/\.{3}$/, "")) === m.index)) continue;
+      // Skip if within or overlapping any named pattern span.
+      if (namedSpans.some(s => m.index >= s.start && m.index < s.end)) continue;
       findings.push({ kind: "high-entropy-string", snippet: clip(m[0]) });
     }
   }
